@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Airline Revenue Management RL Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header>
+            <h1>✈️ Airline Revenue Management Dashboard</h1>
+            <p class="subtitle">Reinforcement Learning Powered Dynamic Pricing</p>
+        </header>
+
+        <!-- Main Grid -->
+        <div class="dashboard-grid">
+            
+            <!-- Left Panel - Controls -->
+            <div class="panel controls-panel">
+                <h2>🎮 Control Center</h2>
+                
+                <!-- Pricing Actions -->
+                <div class="section">
+                    <h3>Pricing Actions</h3>
+                    <div class="button-group">
+                        <button class="action-btn decrease-btn" onclick="takeAction('decrease_20')">
+                            📉 -20%
+                        </button>
+                        <button class="action-btn decrease-btn" onclick="takeAction('decrease_10')">
+                            📉 -10%
+                        </button>
+                        <button class="action-btn hold-btn" onclick="takeAction('hold')">
+                            ⏸️ Hold
+                        </button>
+                        <button class="action-btn increase-btn" onclick="takeAction('increase_10')">
+                            📈 +10%
+                        </button>
+                        <button class="action-btn increase-btn" onclick="takeAction('increase_20')">
+                            📈 +20%
+                        </button>
+                    </div>
+                </div>
+
+                <!-- AI Recommendation -->
+                <div class="section ai-recommendation">
+                    <h3>🤖 AI Recommendation</h3>
+                    <div id="ai-rec-content">
+                        <p class="loading">Getting recommendation...</p>
+                    </div>
+                    <button class="btn-primary" onclick="getAIRecommendation()">
+                        🔄 Refresh
+                    </button>
+                    <button class="btn-success" onclick="followAI()">
+                        ✅ Follow AI
+                    </button>
+                </div>
+
+                <!-- Disruptions -->
+                <div class="section">
+                    <h3>⚠️ Trigger Disruption</h3>
+                    <div class="button-group">
+                        <button class="disruption-btn" onclick="triggerDisruption('weather')">
+                            ⛈️ Weather
+                        </button>
+                        <button class="disruption-btn" onclick="triggerDisruption('pilot_strike')">
+                            ✊ Strike
+                        </button>
+                        <button class="disruption-btn" onclick="triggerDisruption('competitor_cancel')">
+                            ✈️ Comp Cancel
+                        </button>
+                        <button class="disruption-btn" onclick="triggerDisruption('none')">
+                            ✅ Clear
+                        </button>
+                    </div>
+                </div>
+
+                <!-- System Controls -->
+                <div class="section">
+                    <button class="btn-secondary full-width" onclick="autoRun()">
+                        🤖 Auto Run (AI Mode)
+                    </button>
+                    <button class="btn-warning full-width" onclick="resetSimulation()">
+                        🔄 Reset Simulation
+                    </button>
+                </div>
+            </div>
+
+            <!-- Center Panel - Main Metrics -->
+            <div class="panel metrics-panel">
+                <h2>📊 Live Metrics</h2>
+                
+                <!-- Key Metrics Cards -->
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-label">Current Price</div>
+                        <div class="metric-value" id="current-price">₹6,000</div>
+                        <div class="metric-change" id="price-change">—</div>
+                    </div>
+                    
+                    <div class="metric-card">
+                        <div class="metric-label">Seats Sold</div>
+                        <div class="metric-value" id="seats-sold">0 / 180</div>
+                        <div class="metric-change" id="seats-change">—</div>
+                    </div>
+                    
+                    <div class="metric-card">
+                        <div class="metric-label">Load Factor</div>
+                        <div class="metric-value" id="load-factor">0.0%</div>
+                        <div class="metric-progress">
+                            <div class="progress-bar" id="load-progress"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="metric-card">
+                        <div class="metric-label">Total Revenue</div>
+                        <div class="metric-value" id="total-revenue">₹0</div>
+                        <div class="metric-change positive" id="revenue-change">—</div>
+                    </div>
+                    
+                    <div class="metric-card">
+                        <div class="metric-label">Days to Departure</div>
+                        <div class="metric-value" id="days-departure">90</div>
+                    </div>
+                    
+                    <div class="metric-card">
+                        <div class="metric-label">Disruption Status</div>
+                        <div class="metric-value" id="disruption-status">None</div>
+                    </div>
+                </div>
+
+                <!-- Competitor Prices -->
+                <div class="section competitor-section">
+                    <h3>🏢 Competitor Prices</h3>
+                    <div id="competitor-prices" class="competitor-grid">
+                        <!-- Will be populated dynamically -->
+                    </div>
+                </div>
+
+                <!-- Charts -->
+                <div class="charts-container">
+                    <div class="chart-box">
+                        <h3>Price & Bookings History</h3>
+                        <canvas id="priceChart"></canvas>
+                    </div>
+                    <div class="chart-box">
+                        <h3>Revenue Trend</h3>
+                        <canvas id="revenueChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Panel - Activity Log & Analytics -->
+            <div class="panel log-panel">
+                <h2>📝 Activity Log</h2>
+                <div id="activity-log" class="activity-log">
+                    <div class="log-entry">
+                        <span class="log-time">00:00:00</span>
+                        <span class="log-message">System initialized</span>
+                    </div>
+                </div>
+
+                <h2>📈 Analytics</h2>
+                <div id="analytics-panel" class="analytics-panel">
+                    <!-- Analytics will be populated -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="toast"></div>
+
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>
