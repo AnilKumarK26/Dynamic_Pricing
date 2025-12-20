@@ -1,441 +1,547 @@
 """
-Real Flight Data Preprocessing - IMPROVED VERSION
-File: utils/preprocessing.py
-Uses ACTUAL flight data with MULTI-FACTOR analysis to calibrate the environment
+Enhanced Flight Data Preprocessing & Calibration
+Produces route-wise, class-wise statistics for Multi-Class RL environment
+
+OUTPUT FORMAT (route_stats.pkl):
+{
+  "Delhi-Mumbai": {
+      "Economy": {
+          "price_stats": {mean, median, std, q25, q75, ...},
+          "competitor_prices": {airline1: price, airline2: price, ...},
+          "competitor_details": {airline1: {median, mean, count, ...}, ...}
+      },
+      "Business": {
+          "price_stats": {...},
+          "competitor_prices": {...},
+          "competitor_details": {...}
+      }
+  },
+  ...
+}
 """
 
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import LabelEncoder, StandardScaler
 import pickle
 import os
+from pathlib import Path
 
 
 class FlightDataProcessor:
-    def __init__(self):
-        self.label_encoders = {}
-        self.scaler = StandardScaler()
+    """
+    Enhanced flight data processor with:
+    - Multi-class support (Economy + Business)
+    - Comprehensive competitor analysis
+    - Statistical validation
+    - Detailed reporting
+    """
+    
+    def __init__(self, verbose=True):
         self.route_stats = {}
+        self.verbose = verbose
+        self.data_quality_report = {}
+
+    # =================================================
+    # DATA LOADING & VALIDATION
+    # =================================================
+    def load_data(self, filepath="data/flight_data.csv"):
+        """Load and validate flight data"""
         
-    def load_data(self, filepath='data/flight_data.csv'):
-        """Load REAL flight dataset"""
         if not os.path.exists(filepath):
             raise FileNotFoundError(
                 f"\n❌ Flight data not found at: {filepath}\n"
-                f"Please add your flight_data.csv to the data/ folder!\n"
-                f"Required columns: airline, from, to, route, price, duration_in_min, stops, class_category"
+                f"Please ensure your CSV file is in the correct location.\n"
+                f"Required columns: route, airline, price, class_category"
             )
-        
+
         df = pd.read_csv(filepath)
-        print(f"✓ Loaded {len(df)} flight records from real data")
         
+        if self.verbose:
+            print(f"\n✓ Loaded {len(df):,} flight records from {filepath}")
+
         # Validate required columns
-        required_cols = ['airline', 'price']
-        missing_cols = [col for col in required_cols if col not in df.columns]
-        if missing_cols:
-            raise ValueError(f"Missing required columns: {missing_cols}")
+        required_cols = ["route", "airline", "price", "class_category"]
+        missing = [c for c in required_cols if c not in df.columns]
+
+        if missing:
+            # Try to auto-create route column
+            if "route" in missing and "from" in df.columns and "to" in df.columns:
+                df["route"] = df["from"] + "-" + df["to"]
+                missing.remove("route")
+                if self.verbose:
+                    print(f"  ✓ Auto-created 'route' column from 'from' and 'to'")
         
-        # Create route column if missing
-        if 'route' not in df.columns:
-            if 'from' in df.columns and 'to' in df.columns:
-                df['route'] = df['from'] + '-' + df['to']
-                print("✓ Created 'route' column from 'from' and 'to'")
-            else:
-                raise ValueError("Cannot determine routes - need 'route' or 'from'+'to' columns")
+        if missing:
+            raise ValueError(
+                f"❌ Missing required columns: {missing}\n"
+                f"Available columns: {df.columns.tolist()}"
+            )
+
+        # Data cleaning
+        df = self._clean_data(df)
         
         return df
-    
-    def get_available_routes(self, df):
-        """Get all unique routes in the dataset"""
-        routes = df['route'].value_counts()
-        print("\n📍 Available Routes:")
-        for route, count in routes.items():
-            print(f"   {route}: {count} flights")
+
+    def _clean_data(self, df):
+        """Clean and validate data"""
         
-        return routes.index.tolist()
-    
-    def analyze_route(self, df, route):
-        """
-        Analyze a specific route with MULTI-FACTOR segmentation
-        This filters to get COMPARABLE base prices (apples-to-apples)
-        """
-        route_df = df[df['route'] == route].copy()
+        initial_count = len(df)
         
-        if len(route_df) == 0:
-            raise ValueError(f"No data found for route: {route}")
+        # Remove rows with missing critical values
+        df = df.dropna(subset=["route", "airline", "price", "class_category"])
         
-        print(f"\n{'='*80}")
-        print(f"🔍 MULTI-FACTOR ANALYSIS: {route}")
-        print(f"{'='*80}")
-        print(f"   Total flights in dataset: {len(route_df)}")
+        # Remove invalid prices
+        df = df[df["price"] > 0]
         
-        # ===== STEP 1: Filter to BASE SEGMENT (comparable flights) =====
-        base_segment = route_df.copy()
-        filters_applied = []
-        
-        # Filter 1: Non-stop flights only (most comparable)
-        if 'stops' in route_df.columns:
-            non_stop = base_segment[base_segment['stops'] == 0]
-            if len(non_stop) > 0:
-                base_segment = non_stop
-                filters_applied.append(f"Non-stop flights ({len(non_stop)})")
-            else:
-                filters_applied.append("All stops (no non-stop data)")
-        
-        # Filter 2: Economy class only
-        if 'class_category' in route_df.columns:
-            economy = base_segment[base_segment['class_category'] == 'Economy']
-            if len(economy) > 0:
-                base_segment = economy
-                filters_applied.append(f"Economy class ({len(economy)})")
-            else:
-                filters_applied.append("All classes (no economy data)")
-        
-        # Filter 3: Daytime departures (most common business scenario)
-        if 'dep_period' in route_df.columns:
-            daytime_keywords = ['Morning', 'Afternoon', 'morning', 'afternoon']
-            daytime = base_segment[base_segment['dep_period'].isin(daytime_keywords)]
-            if len(daytime) > 10:  # Need enough data
-                base_segment = daytime
-                filters_applied.append(f"Daytime departures ({len(daytime)})")
-            else:
-                filters_applied.append("All times (limited daytime data)")
-        elif 'dep_daytime_category' in route_df.columns:
-            daytime = base_segment[base_segment['dep_daytime_category'] == 'Daytime Departure']
-            if len(daytime) > 10:
-                base_segment = daytime
-                filters_applied.append(f"Daytime departures ({len(daytime)})")
-        
-        print(f"\n📊 Base Segment Filters Applied:")
-        for i, f in enumerate(filters_applied, 1):
-            print(f"   {i}. {f}")
-        print(f"\n✓ Final base segment: {len(base_segment)} comparable flights")
-        
-        if len(base_segment) < 5:
-            print(f"\n⚠️  WARNING: Only {len(base_segment)} flights in base segment!")
-            print(f"   Falling back to all flights for this route")
-            base_segment = route_df
-        
-        # ===== STEP 2: Calculate REALISTIC Price Statistics =====
-        price_stats = {
-            'mean': float(base_segment['price'].mean()),
-            'median': float(base_segment['price'].median()),
-            'std': float(base_segment['price'].std()),
-            'min': float(base_segment['price'].min()),
-            'max': float(base_segment['price'].max()),
-            'q10': float(base_segment['price'].quantile(0.10)),
-            'q25': float(base_segment['price'].quantile(0.25)),
-            'q75': float(base_segment['price'].quantile(0.75)),
-            'q90': float(base_segment['price'].quantile(0.90)),
-            'sample_size': len(base_segment)
+        # Standardize class names
+        class_mapping = {
+            "economy": "Economy",
+            "ECONOMY": "Economy",
+            "business": "Business",
+            "BUSINESS": "Business",
+            "first": "First",
+            "FIRST": "First"
         }
+        df["class_category"] = df["class_category"].replace(class_mapping)
         
-        print(f"\n💰 Price Statistics (Base Segment - Comparable Flights):")
-        print(f"   Mean:       ₹{price_stats['mean']:.0f}")
-        print(f"   Median:     ₹{price_stats['median']:.0f}")
-        print(f"   Std Dev:    ₹{price_stats['std']:.0f}")
-        print(f"   Range:      ₹{price_stats['min']:.0f} - ₹{price_stats['max']:.0f}")
-        print(f"   IQR (Q25-Q75): ₹{price_stats['q25']:.0f} - ₹{price_stats['q75']:.0f}")
-        print(f"   Sample:     {price_stats['sample_size']} flights")
+        # Only keep Economy and Business (most common)
+        df = df[df["class_category"].isin(["Economy", "Business"])]
         
-        # ===== STEP 3: Get COMPETITOR PRICES (from base segment) =====
-        print(f"\n🏢 Competitor Analysis (Base Segment):")
+        cleaned_count = len(df)
+        removed = initial_count - cleaned_count
         
+        if self.verbose and removed > 0:
+            print(f"  ✓ Cleaned data: removed {removed} invalid records ({removed/initial_count*100:.1f}%)")
+        
+        return df
+
+    # =================================================
+    # MAIN ANALYSIS: ROUTE + CLASS
+    # =================================================
+    def analyze_route_by_class(self, df, route):
+        """
+        Comprehensive analysis of one route, separated by class
+        Returns statistics for Economy and Business classes
+        """
+        
+        route_df = df[df["route"] == route].copy()
+
+        if route_df.empty:
+            raise ValueError(f"No data for route: {route}")
+
+        if self.verbose:
+            print(f"\n{'='*80}")
+            print(f"📊 ANALYZING ROUTE: {route}")
+            print(f"{'='*80}")
+            print(f"Total flights: {len(route_df)}")
+
+        route_result = {}
+        
+        # Analyze each class separately
+        for cls in ["Economy", "Business"]:
+            cls_df = route_df[route_df["class_category"] == cls]
+            
+            if self.verbose:
+                print(f"\n🎫 {cls} Class Analysis:")
+                print(f"   Flights: {len(cls_df)}")
+
+            # Skip if insufficient data
+            if len(cls_df) < 5:
+                if self.verbose:
+                    print(f"   ⚠️  Insufficient data (need ≥5 flights, have {len(cls_df)})")
+                continue
+
+            # Compute statistics
+            class_stats = self._compute_class_statistics(cls_df, cls)
+            
+            if class_stats:
+                route_result[cls] = class_stats
+
+        if not route_result:
+            raise ValueError(
+                f"❌ No valid class data for route {route}\n"
+                f"   Economy flights: {len(route_df[route_df['class_category']=='Economy'])}\n"
+                f"   Business flights: {len(route_df[route_df['class_category']=='Business'])}"
+            )
+
+        if self.verbose:
+            print(f"\n{'='*80}")
+            print(f"✓ Completed analysis for {route}")
+            print(f"  Classes calibrated: {list(route_result.keys())}")
+            print(f"{'='*80}")
+
+        return route_result
+
+    def _compute_class_statistics(self, cls_df, class_name):
+        """Compute comprehensive statistics for a class"""
+        
+        # ------------------------------
+        # PRICE STATISTICS
+        # ------------------------------
+        prices = cls_df["price"]
+        
+        price_stats = {
+            "mean": float(prices.mean()),
+            "median": float(prices.median()),
+            "std": float(prices.std()),
+            "q10": float(prices.quantile(0.10)),
+            "q25": float(prices.quantile(0.25)),
+            "q75": float(prices.quantile(0.75)),
+            "q90": float(prices.quantile(0.90)),
+            "min": float(prices.min()),
+            "max": float(prices.max()),
+            "count": int(len(cls_df)),
+            "cv": float(prices.std() / prices.mean())  # Coefficient of variation
+        }
+
+        if self.verbose:
+            print(f"   Price Statistics:")
+            print(f"      Mean:   ₹{price_stats['mean']:,.0f}")
+            print(f"      Median: ₹{price_stats['median']:,.0f}")
+            print(f"      Std:    ₹{price_stats['std']:,.0f}")
+            print(f"      Range:  ₹{price_stats['min']:,.0f} - ₹{price_stats['max']:,.0f}")
+            print(f"      IQR:    ₹{price_stats['q25']:,.0f} - ₹{price_stats['q75']:,.0f}")
+
+        # ------------------------------
+        # COMPETITOR ANALYSIS
+        # ------------------------------
         competitor_prices = {}
         competitor_details = {}
         
-        for airline in base_segment['airline'].unique():
-            airline_data = base_segment[base_segment['airline'] == airline]
+        airlines = cls_df["airline"].unique()
+        
+        if self.verbose:
+            print(f"   Competitors: {len(airlines)} airlines")
+
+        for airline in airlines:
+            airline_df = cls_df[cls_df["airline"] == airline]
             
-            if len(airline_data) == 0:
+            if len(airline_df) == 0:
                 continue
             
-            # Use MEDIAN (more robust to outliers than mean)
-            median_price = float(airline_data['price'].median())
-            mean_price = float(airline_data['price'].mean())
+            airline_prices = airline_df["price"]
+            
+            # Use median (more robust to outliers)
+            median_price = float(airline_prices.median())
+            mean_price = float(airline_prices.mean())
             
             competitor_prices[airline] = median_price
             
             competitor_details[airline] = {
-                'median': median_price,
-                'mean': mean_price,
-                'count': len(airline_data),
-                'std': float(airline_data['price'].std()) if len(airline_data) > 1 else 0,
-                'min': float(airline_data['price'].min()),
-                'max': float(airline_data['price'].max())
+                "median": median_price,
+                "mean": mean_price,
+                "std": float(airline_prices.std()) if len(airline_df) > 1 else 0.0,
+                "count": int(len(airline_df)),
+                "min": float(airline_prices.min()),
+                "max": float(airline_prices.max()),
+                "market_share": float(len(airline_df) / len(cls_df))  # % of flights
             }
             
-            print(f"   {airline:15s} → Median: ₹{median_price:6.0f}, "
-                  f"Mean: ₹{mean_price:6.0f}, "
-                  f"Count: {len(airline_data):3d}, "
-                  f"Std: ₹{competitor_details[airline]['std']:.0f}")
-        
-        # ===== STEP 4: Calculate PRICE MODIFIERS (for simulation variations) =====
-        price_modifiers = self._calculate_price_modifiers(route_df)
-        
-        if price_modifiers:
-            print(f"\n🎛️  Price Modifiers (for simulation variations):")
-            if 'stops' in price_modifiers:
-                print(f"   Stops impact:")
-                for stops, factor in price_modifiers['stops'].items():
-                    print(f"      {stops} stops: {factor:.2f}x base price")
-            
-            if 'time_of_day' in price_modifiers:
-                print(f"   Time of day impact:")
-                for period, factor in sorted(price_modifiers['time_of_day'].items(), 
-                                            key=lambda x: x[1], reverse=True)[:3]:
-                    print(f"      {period}: {factor:.2f}x base price")
-        
-        # ===== STEP 5: Additional Statistics =====
-        # Airlines on ALL flights (for reference)
-        airlines_all = route_df['airline'].value_counts()
-        print(f"\n✈️  All Airlines on Route (all flight types):")
-        for airline, count in airlines_all.items():
-            avg_price = route_df[route_df['airline'] == airline]['price'].mean()
-            print(f"   {airline}: {count} flights (overall avg: ₹{avg_price:.0f})")
-        
-        # Duration statistics (if available)
-        duration_stats = None
-        if 'duration_in_min' in route_df.columns:
-            duration_stats = {
-                'mean': float(route_df['duration_in_min'].mean()),
-                'median': float(route_df['duration_in_min'].median()),
-                'std': float(route_df['duration_in_min'].std()),
-                'min': float(route_df['duration_in_min'].min()),
-                'max': float(route_df['duration_in_min'].max())
+            if self.verbose:
+                print(f"      {airline:20s}: ₹{median_price:7,.0f} "
+                      f"(n={len(airline_df):3d}, share={competitor_details[airline]['market_share']*100:4.1f}%)")
+
+        # Validate we have competitors
+        if not competitor_prices:
+            if self.verbose:
+                print(f"   ⚠️  No valid competitor data")
+            return None
+
+        # ------------------------------
+        # DEMAND INDICATORS (if available)
+        # ------------------------------
+        demand_indicators = self._compute_demand_indicators(cls_df)
+
+        # ------------------------------
+        # ASSEMBLE RESULTS
+        # ------------------------------
+        return {
+            "price_stats": price_stats,
+            "competitor_prices": competitor_prices,
+            "competitor_details": competitor_details,
+            "demand_indicators": demand_indicators,
+            "data_quality": {
+                "sample_size": len(cls_df),
+                "airlines_count": len(airlines),
+                "price_cv": price_stats["cv"],
+                "min_competitor_flights": min([d["count"] for d in competitor_details.values()])
             }
-            print(f"\n⏱️  Duration Statistics:")
-            print(f"   Mean: {duration_stats['mean']:.0f} min")
-            print(f"   Range: {duration_stats['min']:.0f} - {duration_stats['max']:.0f} min")
+        }
+
+    def _compute_demand_indicators(self, cls_df):
+        """Compute additional demand-related metrics if data available"""
+        
+        indicators = {}
         
         # Stops analysis (if available)
-        if 'stops' in route_df.columns:
-            stops_dist = route_df['stops'].value_counts(normalize=True).sort_index()
-            print(f"\n🛬 Stops Distribution:")
-            for stops, pct in stops_dist.items():
-                count = len(route_df[route_df['stops'] == stops])
-                avg_price = route_df[route_df['stops'] == stops]['price'].mean()
-                print(f"   {stops} stops: {pct*100:5.1f}% ({count} flights, avg: ₹{avg_price:.0f})")
+        if "stops" in cls_df.columns:
+            stops_dist = cls_df["stops"].value_counts(normalize=True).to_dict()
+            indicators["stops_distribution"] = {int(k): float(v) for k, v in stops_dist.items()}
         
-        # Class distribution (if available)
-        if 'class_category' in route_df.columns:
-            class_dist = route_df['class_category'].value_counts(normalize=True)
-            print(f"\n💺 Class Distribution:")
-            for cls, pct in class_dist.items():
-                count = len(route_df[route_df['class_category'] == cls])
-                avg_price = route_df[route_df['class_category'] == cls]['price'].mean()
-                print(f"   {cls}: {pct*100:5.1f}% ({count} flights, avg: ₹{avg_price:.0f})")
+        # Time of day analysis (if available)
+        if "dep_hour" in cls_df.columns:
+            # Categorize into periods
+            def categorize_hour(hour):
+                if 6 <= hour < 12:
+                    return "Morning"
+                elif 12 <= hour < 18:
+                    return "Afternoon"
+                elif 18 <= hour < 22:
+                    return "Evening"
+                else:
+                    return "Night"
+            
+            cls_df["time_period"] = cls_df["dep_hour"].apply(categorize_hour)
+            time_dist = cls_df["time_period"].value_counts(normalize=True).to_dict()
+            indicators["time_distribution"] = time_dist
         
-        # ===== STEP 6: Store comprehensive statistics =====
-        route_stats = {
-            'route': route,
-            'n_flights': len(route_df),
-            'n_base_flights': len(base_segment),
-            'filters_applied': filters_applied,
-            'price_stats': price_stats,
-            'competitor_prices': competitor_prices,
-            'competitor_details': competitor_details,
-            'price_modifiers': price_modifiers,
-            'airlines': airlines_all.to_dict(),
-            'duration_stats': duration_stats,
-        }
+        # Duration analysis (if available)
+        if "duration_in_min" in cls_df.columns:
+            indicators["avg_duration_min"] = float(cls_df["duration_in_min"].mean())
         
-        self.route_stats[route] = route_stats
+        return indicators
+
+    # =================================================
+    # BATCH PROCESSING
+    # =================================================
+    def run_full_calibration(self, df, routes=None):
+        """
+        Run calibration for all routes (or specified routes)
+        Returns comprehensive statistics for RL environment
+        """
+        
+        if routes is None:
+            routes = df["route"].unique()
         
         print(f"\n{'='*80}")
-        print(f"✓ Analysis complete for {route}")
+        print(f"🚀 STARTING FULL CALIBRATION")
+        print(f"{'='*80}")
+        print(f"Routes to process: {len(routes)}")
+        print(f"Total records: {len(df):,}")
+        
+        # Class distribution
+        class_dist = df["class_category"].value_counts()
+        print(f"\nClass distribution:")
+        for cls, count in class_dist.items():
+            print(f"  {cls}: {count:,} flights ({count/len(df)*100:.1f}%)")
+
+        success_count = 0
+        fail_count = 0
+        
+        for i, route in enumerate(routes, 1):
+            try:
+                if self.verbose:
+                    print(f"\n[{i}/{len(routes)}] Processing {route}...")
+                
+                self.route_stats[route] = self.analyze_route_by_class(df, route)
+                success_count += 1
+                
+            except Exception as e:
+                if self.verbose:
+                    print(f"\n[{i}/{len(routes)}] ❌ Failed to process {route}: {e}")
+                fail_count += 1
+                continue
+
+        # Summary
+        print(f"\n{'='*80}")
+        print(f"📈 CALIBRATION SUMMARY")
+        print(f"{'='*80}")
+        print(f"✓ Successfully calibrated: {success_count}/{len(routes)} routes")
+        if fail_count > 0:
+            print(f"❌ Failed: {fail_count} routes")
+        print(f"\nCalibrated routes: {list(self.route_stats.keys())}")
+
+        if not self.route_stats:
+            raise RuntimeError("❌ No routes were successfully calibrated")
+
+        # Generate quality report
+        self._generate_quality_report()
+
+        return self.route_stats
+
+    def _generate_quality_report(self):
+        """Generate data quality report"""
+        
+        print(f"\n{'='*80}")
+        print(f"📊 DATA QUALITY REPORT")
         print(f"{'='*80}")
         
-        return route_stats
-    
-    def _calculate_price_modifiers(self, route_df):
-        """
-        Calculate price adjustment factors for different conditions
-        These help simulate realistic price variations in the RL environment
-        """
-        modifiers = {}
-        
-        # Stops modifier - how much more expensive are connecting flights?
-        if 'stops' in route_df.columns and 0 in route_df['stops'].values:
-            base_price = route_df[route_df['stops'] == 0]['price'].median()
-            if not pd.isna(base_price) and base_price > 0:
-                modifiers['stops'] = {}
-                for stops in route_df['stops'].unique():
-                    stop_data = route_df[route_df['stops'] == stops]
-                    if len(stop_data) > 0:
-                        stop_price = stop_data['price'].median()
-                        modifiers['stops'][int(stops)] = float(stop_price / base_price)
-        
-        # Time of day modifier - are evening/night flights cheaper?
-        if 'dep_period' in route_df.columns:
-            overall_median = route_df['price'].median()
-            if overall_median > 0:
-                modifiers['time_of_day'] = {}
-                for period in route_df['dep_period'].unique():
-                    period_data = route_df[route_df['dep_period'] == period]
-                    if len(period_data) > 0:
-                        period_price = period_data['price'].median()
-                        modifiers['time_of_day'][period] = float(period_price / overall_median)
-        
-        # Class modifier - how much more expensive is Business/First?
-        if 'class_category' in route_df.columns:
-            economy_data = route_df[route_df['class_category'] == 'Economy']
-            if len(economy_data) > 0:
-                economy_price = economy_data['price'].median()
-                if not pd.isna(economy_price) and economy_price > 0:
-                    modifiers['class'] = {}
-                    for class_cat in route_df['class_category'].unique():
-                        class_data = route_df[route_df['class_category'] == class_cat]
-                        if len(class_data) > 0:
-                            class_price = class_data['price'].median()
-                            modifiers['class'][class_cat] = float(class_price / economy_price)
-        
-        return modifiers
-    
-    def get_calibrated_env_params(self, route_stats):
-        """
-        Convert route statistics to environment parameters
-        This ensures the RL environment uses REAL data patterns!
-        """
-        price_stats = route_stats['price_stats']
-        
-        params = {
-            # Base pricing from REAL BASE SEGMENT data (comparable flights)
-            'base_price': price_stats['median'],  # Use median (more robust)
-            'price_mean': price_stats['mean'],
-            'price_std': price_stats['std'],
+        for route, route_data in self.route_stats.items():
+            print(f"\n{route}:")
             
-            # Realistic price bounds
-            'price_min': price_stats['q25'],  # 25th percentile (competitive low)
-            'price_max': price_stats['q75'] * 1.3,  # 30% above 75th percentile (surge)
-            
-            # Competitor prices from REAL BASE SEGMENT data
-            'competitor_prices': route_stats['competitor_prices'],
-            'competitor_details': route_stats['competitor_details'],
-            
-            # Price modifiers for simulation variations
-            'price_modifiers': route_stats.get('price_modifiers', {}),
-            
-            # Realistic aircraft & booking parameters
-            'total_seats': 180,  # Standard single-aisle aircraft (A320/B737)
-            'max_days_before_departure': 90,
-            
-            # Demand parameters (calibrated to realistic booking patterns)
-            'base_demand_rate': 0.15,  # 15% of capacity per day on average
-            'price_elasticity': 2.0,  # How sensitive demand is to price changes
-            
-            # Time-based booking curve (more bookings closer to departure)
-            'early_booking_factor': 0.3,  # Lower demand 90 days out
-            'late_booking_factor': 1.5,   # Higher demand close to departure
-            
-            # Route metadata
-            'route': route_stats['route'],
-            'n_airlines': len(route_stats['competitor_prices']),
-            'sample_size': price_stats['sample_size']
-        }
+            for cls, cls_data in route_data.items():
+                quality = cls_data["data_quality"]
+                print(f"  {cls}:")
+                print(f"    Sample size: {quality['sample_size']} flights")
+                print(f"    Airlines: {quality['airlines_count']}")
+                print(f"    Price CV: {quality['price_cv']:.2f}")
+                print(f"    Min competitor data: {quality['min_competitor_flights']} flights")
+                
+                # Quality assessment
+                if quality['sample_size'] >= 20 and quality['airlines_count'] >= 3:
+                    print(f"    Quality: ✓ EXCELLENT")
+                elif quality['sample_size'] >= 10 and quality['airlines_count'] >= 2:
+                    print(f"    Quality: ✓ Good")
+                else:
+                    print(f"    Quality: ⚠️  Limited (consider with caution)")
+
+    # =================================================
+    # SAVE / LOAD
+    # =================================================
+    def save_route_stats(self, filepath="data/route_stats.pkl"):
+        """Save calibrated statistics to pickle file"""
         
-        print(f"\n⚙️  Calibrated Environment Parameters:")
-        print(f"   Route: {params['route']}")
-        print(f"   Base Price (median): ₹{params['base_price']:.0f}")
-        print(f"   Price Mean: ₹{params['price_mean']:.0f}")
-        print(f"   Price Range: ₹{params['price_min']:.0f} - ₹{params['price_max']:.0f}")
-        print(f"   Competitors: {params['n_airlines']}")
-        print(f"   Sample Size: {params['sample_size']} comparable flights")
-        print(f"   Total Seats: {params['total_seats']}")
+        # Ensure directory exists
+        Path(filepath).parent.mkdir(parents=True, exist_ok=True)
         
-        return params
-    
-    def preprocess(self, df):
-        """Preprocess flight data for RL"""
-        df_processed = df.copy()
-        
-        # Encode categorical variables
-        categorical_cols = ['airline', 'from', 'to', 'route']
-        
-        for col in categorical_cols:
-            if col in df_processed.columns:
-                le = LabelEncoder()
-                df_processed[col + '_encoded'] = le.fit_transform(df_processed[col].astype(str))
-                self.label_encoders[col] = le
-        
-        # Feature engineering
-        if 'duration_in_min' in df_processed.columns:
-            df_processed['price_per_minute'] = df_processed['price'] / df_processed['duration_in_min']
-        
-        if 'dep_hour' in df_processed.columns:
-            df_processed['is_morning_flight'] = (df_processed['dep_hour'] >= 6) & (df_processed['dep_hour'] < 12)
-            df_processed['is_evening_flight'] = (df_processed['dep_hour'] >= 18) & (df_processed['dep_hour'] < 24)
-        
-        return df_processed
-    
-    def save_route_stats(self, filepath='data/route_stats.pkl'):
-        """Save analyzed route statistics"""
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        with open(filepath, 'wb') as f:
+        with open(filepath, "wb") as f:
             pickle.dump(self.route_stats, f)
-        print(f"\n✓ Route statistics saved to {filepath}")
-    
-    def load_route_stats(self, filepath='data/route_stats.pkl'):
-        """Load analyzed route statistics"""
-        if os.path.exists(filepath):
-            with open(filepath, 'rb') as f:
-                self.route_stats = pickle.load(f)
-            print(f"✓ Route statistics loaded from {filepath}")
-            return True
-        else:
+        
+        file_size = os.path.getsize(filepath) / 1024  # KB
+        
+        print(f"\n✓ Saved route statistics to {filepath}")
+        print(f"  File size: {file_size:.1f} KB")
+        print(f"  Routes: {len(self.route_stats)}")
+
+    def load_route_stats(self, filepath="data/route_stats.pkl"):
+        """Load previously calibrated statistics"""
+        
+        if not os.path.exists(filepath):
             print(f"⚠️  No saved route statistics found at {filepath}")
             return False
+        
+        with open(filepath, "rb") as f:
+            self.route_stats = pickle.load(f)
+        
+        print(f"✓ Loaded route statistics from {filepath}")
+        print(f"  Routes: {len(self.route_stats)}")
+        print(f"  Available routes: {list(self.route_stats.keys())}")
+        
+        return True
+
+    # =================================================
+    # VISUALIZATION & EXPORT
+    # =================================================
+    def export_summary(self, filepath="data/calibration_summary.txt"):
+        """Export human-readable summary"""
+        
+        with open(filepath, "w") as f:
+            f.write("="*80 + "\n")
+            f.write("FLIGHT DATA CALIBRATION SUMMARY\n")
+            f.write("="*80 + "\n\n")
+            
+            f.write(f"Total Routes: {len(self.route_stats)}\n\n")
+            
+            for route, route_data in self.route_stats.items():
+                f.write(f"\n{route}\n")
+                f.write("-"*80 + "\n")
+                
+                for cls, cls_data in route_data.items():
+                    stats = cls_data["price_stats"]
+                    comps = cls_data["competitor_prices"]
+                    
+                    f.write(f"\n{cls} Class:\n")
+                    f.write(f"  Price: ₹{stats['median']:,.0f} (median), ₹{stats['mean']:,.0f} (mean)\n")
+                    f.write(f"  Range: ₹{stats['min']:,.0f} - ₹{stats['max']:,.0f}\n")
+                    f.write(f"  Sample: {stats['count']} flights\n")
+                    f.write(f"  Competitors: {len(comps)}\n")
+                    
+                    for airline, price in sorted(comps.items(), key=lambda x: x[1]):
+                        f.write(f"    {airline}: ₹{price:,.0f}\n")
+        
+        print(f"\n✓ Exported summary to {filepath}")
+
+    def get_environment_params(self, route):
+        """
+        Get environment parameters for a specific route
+        Useful for creating route-specific RL environments
+        """
+        
+        if route not in self.route_stats:
+            raise ValueError(f"Route {route} not found in calibrated data")
+        
+        route_data = self.route_stats[route]
+        
+        params = {
+            "route": route,
+            "classes": {}
+        }
+        
+        for cls, cls_data in route_data.items():
+            stats = cls_data["price_stats"]
+            comps = cls_data["competitor_prices"]
+            
+            params["classes"][cls] = {
+                "base_price": stats["median"],
+                "price_mean": stats["mean"],
+                "price_std": stats["std"],
+                "price_min": stats["q25"],
+                "price_max": stats["q75"] * 1.3,
+                "competitor_prices": comps,
+                "sample_size": stats["count"],
+                "n_competitors": len(comps)
+            }
+        
+        return params
 
 
-# Main execution for data analysis
+# =================================================
+# MAIN EXECUTION
+# =================================================
 if __name__ == "__main__":
     print("="*80)
-    print("  REAL FLIGHT DATA ANALYSIS - MULTI-FACTOR VERSION")
+    print("  ENHANCED FLIGHT DATA CALIBRATION")
+    print("  Multi-Class Support (Economy + Business)")
     print("="*80)
-    
+
+    processor = FlightDataProcessor(verbose=True)
+
     try:
-        processor = FlightDataProcessor()
+        # Load dataset
+        df = processor.load_data("data/flight_data.csv")
+
+        # Run full calibration
+        processor.run_full_calibration(df)
+
+        # Save results
+        processor.save_route_stats("data/route_stats.pkl")
+        processor.export_summary("data/calibration_summary.txt")
+
+        print("\n" + "="*80)
+        print("✓ CALIBRATION COMPLETE")
+        print("="*80)
         
-        # Load REAL data
-        df = processor.load_data('data/flight_data.csv')
+        print(f"\n📦 Output Files:")
+        print(f"  • route_stats.pkl - Calibrated statistics for RL environment")
+        print(f"  • calibration_summary.txt - Human-readable summary")
         
-        # Get available routes
-        routes = processor.get_available_routes(df)
+        print(f"\n🎯 Next Steps:")
+        print(f"  1. Use route_stats.pkl in your AirlineRevenueEnv")
+        print(f"  2. Train your RL agent with calibrated parameters")
+        print(f"  3. Evaluate on different routes")
         
-        # Analyze first route (or you can specify)
-        if routes:
-            selected_route = routes[0]  # Change this to analyze different routes
-            print(f"\n🎯 Selected Route: {selected_route}")
-            
-            # Analyze route with MULTI-FACTOR analysis
-            route_stats = processor.analyze_route(df, selected_route)
-            
-            # Get calibrated parameters
-            env_params = processor.get_calibrated_env_params(route_stats)
-            
-            # Save statistics
-            processor.save_route_stats()
-            
-            print("\n" + "="*80)
-            print("  ✓ MULTI-FACTOR ANALYSIS COMPLETE")
-            print("="*80)
-            print("\n📊 Key Improvements:")
-            print("   1. ✓ Filtered to COMPARABLE flights (non-stop, economy, daytime)")
-            print("   2. ✓ Used MEDIAN prices (robust to outliers)")
-            print("   3. ✓ Calculated price modifiers for variations")
-            print("   4. ✓ Realistic base prices for RL environment")
-            print("\nUse these parameters in your environment for realistic simulation!")
-            
-        else:
-            print("\n❌ No routes found in data!")
-            
+        # Show sample
+        sample_route = next(iter(processor.route_stats))
+        print(f"\n📊 Sample Route: {sample_route}")
+        sample_params = processor.get_environment_params(sample_route)
+        print(f"  Classes: {list(sample_params['classes'].keys())}")
+        
+        for cls, params in sample_params['classes'].items():
+            print(f"\n  {cls}:")
+            print(f"    Base price: ₹{params['base_price']:,.0f}")
+            print(f"    Range: ₹{params['price_min']:,.0f} - ₹{params['price_max']:,.0f}")
+            print(f"    Competitors: {params['n_competitors']}")
+
     except FileNotFoundError as e:
-        print(f"\n❌ Error: {e}")
-        print("\n💡 Solution:")
-        print("   1. Add your flight_data.csv to the data/ folder")
-        print("   2. Ensure it has columns: airline, route, price")
-        print("   3. Run this script again")
+        print(f"\n❌ ERROR: {e}")
+        print(f"\n💡 Solution:")
+        print(f"  1. Place your flight_data.csv in the data/ folder")
+        print(f"  2. Ensure required columns: route, airline, price, class_category")
+        print(f"  3. Run this script again")
+        
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\n❌ ERROR: {e}")
         import traceback
         traceback.print_exc()
+
+    print("\n" + "="*80)

@@ -1,13 +1,12 @@
 """
-Calibrated Airline Revenue Management Environment
-Uses REAL flight data statistics for realistic simulation
-File: environment/airline_env.py
+Enhanced Multi-Route, Multi-Class Airline Revenue Management Environment
+Calibrated using REAL flight data with proper disruptions and competitor dynamics
 """
 
 import numpy as np
 import pandas as pd
-import gym
-from gym import spaces
+import gymnasium as gym
+from gymnasium import spaces
 import random
 import pickle
 import os
@@ -15,363 +14,469 @@ import os
 
 class AirlineRevenueEnv(gym.Env):
     """
-    RL Environment for Airline Dynamic Pricing
-    Calibrated using REAL flight data for specific routes
+    Single-agent RL environment with:
+    - Multiple routes (sampled per episode)
+    - Economy + Business class joint pricing
+    - Realistic competitor dynamics
+    - Disruption modeling
+    - Proper demand curves and booking patterns
     """
-    
-    def __init__(self, route='Delhi-Mumbai', route_stats=None, flight_data=None):
+
+    def __init__(self, route_stats_path="data/route_stats.pkl", 
+                 fixed_route=None, seed=None):
         super(AirlineRevenueEnv, self).__init__()
+
+        if seed is not None:
+            np.random.seed(seed)
+            random.seed(seed)
+
+        # Load calibrated route statistics
+        if not os.path.exists(route_stats_path):
+            raise FileNotFoundError(
+                f"❌ {route_stats_path} not found. Run data calibration first."
+            )
+
+        with open(route_stats_path, "rb") as f:
+            self.all_route_stats = pickle.load(f)
+
+        self.routes = list(self.all_route_stats.keys())
+        self.num_routes = len(self.routes)
+        self.fixed_route = fixed_route
+
+        print(f"✓ Loaded calibration for {self.num_routes} routes: {self.routes}")
+
+        # Aircraft configuration (realistic A320 layout)
+        self.econ_seats_total = 150
+        self.bus_seats_total = 30
+        self.total_seats = self.econ_seats_total + self.bus_seats_total
+        self.max_days = 90
+
+        # Action space: Joint pricing for Economy & Business
+        self.ACTION_MAP = {
+            0: (-0.10, -0.10),  # Both decrease
+            1: (-0.10,  0.00),  # Econ down, Bus hold
+            2: (-0.10, +0.10),  # Econ down, Bus up
+            3: ( 0.00, -0.10),  # Econ hold, Bus down
+            4: ( 0.00,  0.00),  # Both hold
+            5: ( 0.00, +0.10),  # Econ hold, Bus up
+            6: (+0.10, -0.10),  # Econ up, Bus down
+            7: (+0.10,  0.00),  # Econ up, Bus hold
+            8: (+0.10, +0.10),  # Both increase
+        }
+
+        self.action_space = spaces.Discrete(9)
+
+        # State space
+        state_dim = 7 + self.num_routes + 5
         
-        self.route = route
-        print(f"\n🎯 Initializing Environment for Route: {route}")
-        
-        # Load calibrated parameters from REAL data
-        if route_stats is not None:
-            self._load_from_stats(route_stats)
-        elif flight_data is not None:
-            self._calibrate_from_data(flight_data)
-        else:
-            print("⚠️  No calibration data provided - using default parameters")
-            self._load_defaults()
-        
-        # Action space: 5 discrete pricing actions
-        # 0: -20%, 1: -10%, 2: 0%, 3: +10%, 4: +20%
-        self.action_space = spaces.Discrete(5)
-        
-        # State space: [current_price, competitor_avg, days_to_dept, 
-        #                seats_remaining_pct, demand_level, disruption, hour]
         self.observation_space = spaces.Box(
-            low=np.array([0, 0, 0, 0, 0, 0, 0]),
-            high=np.array([50000, 50000, 90, 1, 1, 1, 23]),
+            low=-np.inf,
+            high=np.inf,
+            shape=(state_dim,),
             dtype=np.float32
         )
-        
-        # Episode parameters
-        self.max_steps = self.max_days
-        self.current_step = 0
-        
-        # State variables (will be initialized in reset)
-        self.current_price = None
-        self.seats_sold = 0
-        self.days_to_departure = None
-        self.total_revenue = 0
-        self.disruption_active = False
-        self.current_disruption = 'none'
-        
-        # Disruption types
-        self.disruption_types = ['none', 'weather', 'pilot_strike', 'competitor_cancel']
-        
+
+        # Demand parameters
+        self.econ_base_demand = 0.12
+        self.bus_base_demand = 0.08
+        self.econ_price_elasticity = 2.5
+        self.bus_price_elasticity = 1.2
+
+        # Disruption system
+        self.disruption_types = ["none", "weather", "pilot_strike", "competitor_cancel"]
+        self.disruption_probability = 0.05
+
         print(f"✓ Environment initialized")
-        print(f"  Base Price: ₹{self.base_price:.0f}")
-        print(f"  Price Range: ₹{self.price_min:.0f} - ₹{self.price_max:.0f}")
-        print(f"  Total Seats: {self.total_seats}")
-        print(f"  Competitors: {len(self.competitor_prices)}")
-    
-    def _load_from_stats(self, route_stats):
-        """Load environment parameters from analyzed route statistics"""
-        print("📊 Loading calibrated parameters from route analysis...")
+        print(f"  - Action space: {self.action_space.n} joint pricing actions")
+        print(f"  - State space: {self.observation_space.shape[0]} features")
+        print(f"  - Total seats: {self.total_seats} (Econ: {self.econ_seats_total}, Bus: {self.bus_seats_total})")
+
+    def reset(self, seed=None, options=None):
+        """Reset environment for new episode"""
+        if seed is not None:
+            np.random.seed(seed)
+            random.seed(seed)
         
-        price_stats = route_stats['price_stats']
+        # Sample route for this episode
+        if self.fixed_route and self.fixed_route in self.routes:
+            self.route = self.fixed_route
+            self.route_index = self.routes.index(self.route)
+        else:
+            self.route_index = random.randint(0, self.num_routes - 1)
+            self.route = self.routes[self.route_index]
         
-        # Pricing parameters from REAL data
-        self.base_price = price_stats['mean']
-        self.price_std = price_stats['std']
-        self.price_min = price_stats['q25']
-        self.price_max = price_stats['q75'] * 1.5
+        self.route_stats = self.all_route_stats[self.route]
+
+        # Load class-specific calibration
+        econ = self.route_stats.get("Economy", {})
+        bus = self.route_stats.get("Business", {})
+
+        # Competitor prices
+        self.econ_competitors = econ.get("competitor_prices", {})
+        self.bus_competitors = bus.get("competitor_prices", {})
         
-        # Competitor prices from REAL data
-        self.competitor_prices = route_stats['competitor_prices'].copy()
+        if not self.econ_competitors:
+            self.econ_competitors = {"Competitor_A": 6000}
+        if not self.bus_competitors:
+            self.bus_competitors = {"Competitor_A": 12000}
+
+        # Initial prices
+        self.econ_price = np.mean(list(self.econ_competitors.values()))
+        self.bus_price = np.mean(list(self.bus_competitors.values()))
+
+        # Price bounds
+        econ_stats = econ.get("price_stats", {})
+        bus_stats = bus.get("price_stats", {})
         
-        # Aircraft and timing
-        self.total_seats = 180
-        self.max_days = 90
-        
-        # Demand calibration (realistic booking patterns)
-        self.base_demand_rate = 0.15  # 15% capacity per day average
-        self.price_elasticity = 2.0
-        
-    def _calibrate_from_data(self, flight_data):
-        """Calibrate environment from DataFrame"""
-        print("📊 Calibrating from flight data...")
-        
-        route_df = flight_data[flight_data['route'] == self.route]
-        
-        if len(route_df) == 0:
-            print(f"⚠️  No data for route {self.route}, using defaults")
-            self._load_defaults()
-            return
-        
-        # Calculate statistics
-        self.base_price = route_df['price'].mean()
-        self.price_std = route_df['price'].std()
-        self.price_min = route_df['price'].quantile(0.25)
-        self.price_max = route_df['price'].quantile(0.75) * 1.5
-        
-        # Get competitor prices
-        self.competitor_prices = {}
-        for airline in route_df['airline'].unique():
-            avg_price = route_df[route_df['airline'] == airline]['price'].mean()
-            self.competitor_prices[airline] = avg_price
-        
-        self.total_seats = 180
-        self.max_days = 90
-        self.base_demand_rate = 0.15
-        self.price_elasticity = 2.0
-        
-        print(f"  ✓ Calibrated with {len(route_df)} flights")
-    
-    def _load_defaults(self):
-        """Load default parameters if no data available"""
-        self.base_price = 6000
-        self.price_std = 500
-        self.price_min = 4000
-        self.price_max = 10000
-        
-        self.competitor_prices = {
-            'Competitor_A': 5950,
-            'Competitor_B': 5960,
-            'Competitor_C': 5940,
-        }
-        
-        self.total_seats = 180
-        self.max_days = 90
-        self.base_demand_rate = 0.15
-        self.price_elasticity = 2.0
-    
-    def reset(self):
-        """Reset environment to initial state"""
-        self.current_step = 0
-        self.current_price = self.base_price
-        self.seats_sold = 0
+        self.econ_min = econ_stats.get("q25", self.econ_price * 0.7)
+        self.econ_max = econ_stats.get("q75", self.econ_price * 1.5) * 1.3
+        self.bus_min = bus_stats.get("q25", self.bus_price * 0.7)
+        self.bus_max = bus_stats.get("q75", self.bus_price * 1.5) * 1.3
+
+        # State variables
+        self.econ_sold = 0
+        self.bus_sold = 0
         self.days_to_departure = self.max_days
-        self.total_revenue = 0
-        self.disruption_active = False
-        self.current_disruption = 'none'
+        self.current_step = 0
         
-        return self._get_state()
-    
+        # Revenue tracking
+        self.revenue_econ = 0.0
+        self.revenue_bus = 0.0
+        self.total_revenue = 0.0
+        
+        # Disruption state
+        self.current_disruption = "none"
+        self.disruption_duration = 0
+
+        # History
+        self.episode_history = []
+
+        return self._get_state(), {}
+
     def _get_state(self):
-        """Get current state observation"""
-        competitor_avg = np.mean(list(self.competitor_prices.values()))
-        seats_remaining_pct = (self.total_seats - self.seats_sold) / self.total_seats
-        demand_level = self._calculate_demand()
-        disruption_flag = 1.0 if self.disruption_active else 0.0
-        current_hour = random.randint(0, 23)
+        """Comprehensive state representation"""
         
-        state = np.array([
-            self.current_price,
-            competitor_avg,
-            self.days_to_departure,
-            seats_remaining_pct,
-            demand_level,
-            disruption_flag,
-            current_hour
-        ], dtype=np.float32)
+        # Remaining capacity
+        econ_remaining_pct = (self.econ_seats_total - self.econ_sold) / self.econ_seats_total
+        bus_remaining_pct = (self.bus_seats_total - self.bus_sold) / self.bus_seats_total
         
-        return state
-    
-    def _calculate_demand(self):
-        """
-        Calculate demand based on REALISTIC factors
-        Uses calibrated price elasticity and booking curves
-        """
-        # Time-based demand (booking curve)
-        # More bookings closer to departure
+        # Time normalization
+        days_normalized = self.days_to_departure / self.max_days
+        
+        # Competitor averages
+        econ_comp_avg = np.mean(list(self.econ_competitors.values()))
+        bus_comp_avg = np.mean(list(self.bus_competitors.values()))
+        
+        # Price competitiveness ratios
+        econ_price_ratio = self.econ_price / econ_comp_avg if econ_comp_avg > 0 else 1.0
+        bus_price_ratio = self.bus_price / bus_comp_avg if bus_comp_avg > 0 else 1.0
+        
+        # Route one-hot encoding
+        route_encoding = np.zeros(self.num_routes)
+        route_encoding[self.route_index] = 1.0
+        
+        # Disruption flag
+        disruption_flag = 1.0 if self.current_disruption != "none" else 0.0
+        
+        # Cyclic time encoding
+        time_sin = np.sin(2 * np.pi * (self.current_step / self.max_days))
+        time_cos = np.cos(2 * np.pi * (self.current_step / self.max_days))
+        
+        # Assemble state
+        state = np.concatenate([
+            [self.econ_price, self.bus_price],
+            [econ_comp_avg, bus_comp_avg],
+            [econ_remaining_pct, bus_remaining_pct],
+            [days_normalized],
+            route_encoding,
+            [disruption_flag],
+            [time_sin, time_cos],
+            [econ_price_ratio, bus_price_ratio]
+        ])
+        
+        return state.astype(np.float32)
+
+    def _calculate_econ_demand(self):
+        """Economy demand model"""
         days_ratio = self.days_to_departure / self.max_days
-        time_factor = 0.3 + (1 - days_ratio) * 1.2  # Increases as departure approaches
+        time_factor = 0.4 + (1 - days_ratio) * 1.2
         
-        # Price competitiveness
-        competitor_avg = np.mean(list(self.competitor_prices.values()))
-        price_ratio = self.current_price / competitor_avg
+        econ_comp_avg = np.mean(list(self.econ_competitors.values()))
+        price_ratio = self.econ_price / econ_comp_avg if econ_comp_avg > 0 else 1.0
+        price_factor = np.exp(-self.econ_price_elasticity * (price_ratio - 1))
         
-        # Exponential price sensitivity (realistic consumer behavior)
-        price_factor = np.exp(-self.price_elasticity * (price_ratio - 1))
+        disruption_factor = self._get_disruption_factor()
         
-        # Disruption effects
-        disruption_factor = 1.0
-        if self.current_disruption == 'weather':
-            disruption_factor = 0.6
-        elif self.current_disruption == 'pilot_strike':
-            disruption_factor = 0.3
-        elif self.current_disruption == 'competitor_cancel':
-            disruption_factor = 1.5
-        
-        # Combine all factors
-        demand = self.base_demand_rate * time_factor * price_factor * disruption_factor
+        demand = self.econ_base_demand * time_factor * price_factor * disruption_factor
         
         return np.clip(demand, 0, 1)
-    
-    def _simulate_bookings(self, demand_level):
-        """
-        Simulate realistic bookings based on demand
-        Uses Poisson distribution for natural randomness
-        """
-        seats_available = self.total_seats - self.seats_sold
-        
-        # Expected bookings per day
-        expected_bookings = demand_level * self.total_seats * 0.15
-        
-        # Add realistic randomness with Poisson
-        bookings = np.random.poisson(expected_bookings)
-        
-        # Can't sell more than available
-        bookings = min(bookings, seats_available)
-        
-        return max(0, bookings)
-    
-    def _trigger_disruption(self):
-        """Randomly trigger disruptions (5% chance)"""
-        if random.random() < 0.05:
-            self.disruption_active = True
-            self.current_disruption = random.choice(self.disruption_types[1:])
+
+    def _calculate_bus_demand(self):
+        """Business demand model"""
+        days_ratio = self.days_to_departure / self.max_days
+        if days_ratio > 0.7:
+            time_factor = 0.5
         else:
-            self.disruption_active = False
-            self.current_disruption = 'none'
-    
+            time_factor = 0.8 + (1 - days_ratio) * 0.7
+        
+        bus_comp_avg = np.mean(list(self.bus_competitors.values()))
+        price_ratio = self.bus_price / bus_comp_avg if bus_comp_avg > 0 else 1.0
+        price_factor = np.exp(-self.bus_price_elasticity * (price_ratio - 1))
+        
+        disruption_factor = self._get_disruption_factor()
+        
+        demand = self.bus_base_demand * time_factor * price_factor * disruption_factor
+        
+        return np.clip(demand, 0, 1)
+
+    def _get_disruption_factor(self):
+        """Calculate demand impact of current disruption"""
+        if self.current_disruption == "weather":
+            return 0.6
+        elif self.current_disruption == "pilot_strike":
+            return 0.3
+        elif self.current_disruption == "competitor_cancel":
+            return 1.5
+        return 1.0
+
     def _update_competitor_prices(self):
-        """Update competitor prices with realistic random walk"""
-        for airline in self.competitor_prices:
-            # Random walk with small changes
-            change = np.random.normal(0, self.price_std * 0.05)
-            self.competitor_prices[airline] += change
-            
-            # Keep prices in realistic range
-            self.competitor_prices[airline] = np.clip(
-                self.competitor_prices[airline],
-                self.price_min,
-                self.price_max
+        """Simulate realistic competitor price changes"""
+        for airline in self.econ_competitors:
+            change_pct = np.random.normal(0, 0.02)
+            self.econ_competitors[airline] *= (1 + change_pct)
+            self.econ_competitors[airline] = np.clip(
+                self.econ_competitors[airline],
+                self.econ_min,
+                self.econ_max
             )
-    
+        
+        for airline in self.bus_competitors:
+            change_pct = np.random.normal(0, 0.015)
+            self.bus_competitors[airline] *= (1 + change_pct)
+            self.bus_competitors[airline] = np.clip(
+                self.bus_competitors[airline],
+                self.bus_min,
+                self.bus_max
+            )
+
+    def _trigger_disruption(self):
+        """Randomly trigger disruptions"""
+        if self.disruption_duration > 0:
+            self.disruption_duration -= 1
+            if self.disruption_duration == 0:
+                self.current_disruption = "none"
+        elif random.random() < self.disruption_probability:
+            self.current_disruption = random.choice(self.disruption_types[1:])
+            self.disruption_duration = random.randint(1, 3)
+
     def step(self, action):
-        """Execute one step in the environment"""
-        # Map action to price adjustment
-        price_changes = [-0.20, -0.10, 0.0, 0.10, 0.20]
-        price_adjustment = price_changes[action]
+        """Execute pricing action and simulate one day"""
         
-        # Update price
-        old_price = self.current_price
-        self.current_price *= (1 + price_adjustment)
-        self.current_price = np.clip(self.current_price, self.price_min, self.price_max)
-        
+        # Get price adjustments
+        econ_adj, bus_adj = self.ACTION_MAP[action]
+
+        # Update prices
+        self.econ_price *= (1 + econ_adj)
+        self.bus_price *= (1 + bus_adj)
+
+        # Enforce bounds
+        self.econ_price = np.clip(self.econ_price, self.econ_min, self.econ_max)
+        self.bus_price = np.clip(self.bus_price, self.bus_min, self.bus_max)
+
         # Update competitors
         self._update_competitor_prices()
-        
-        # Trigger random disruptions
+
+        # Check disruptions
         self._trigger_disruption()
+
+        # Calculate demand
+        econ_demand = self._calculate_econ_demand()
+        bus_demand = self._calculate_bus_demand()
+
+        # Simulate bookings
+        econ_available = self.econ_seats_total - self.econ_sold
+        bus_available = self.bus_seats_total - self.bus_sold
         
-        # Calculate demand and bookings
-        demand = self._calculate_demand()
-        bookings = self._simulate_bookings(demand)
+        expected_econ = econ_demand * self.econ_seats_total * 0.15
+        expected_bus = bus_demand * self.bus_seats_total * 0.1
         
-        # Update state
-        self.seats_sold += bookings
-        revenue_this_step = bookings * self.current_price
-        self.total_revenue += revenue_this_step
+        econ_bookings = min(
+            np.random.poisson(expected_econ),
+            econ_available
+        )
+        bus_bookings = min(
+            np.random.poisson(expected_bus),
+            bus_available
+        )
+
+        # Update inventory and revenue
+        self.econ_sold += econ_bookings
+        self.bus_sold += bus_bookings
+
+        step_revenue_econ = econ_bookings * self.econ_price
+        step_revenue_bus = bus_bookings * self.bus_price
         
-        # Calculate reward
-        reward = self._calculate_reward(bookings, revenue_this_step)
-        
-        # Update time
+        self.revenue_econ += step_revenue_econ
+        self.revenue_bus += step_revenue_bus
+        self.total_revenue = self.revenue_econ + self.revenue_bus
+
+        # Advance time
         self.days_to_departure -= 1
         self.current_step += 1
+
+        # Calculate reward
+        reward = self._calculate_reward(
+            econ_bookings, bus_bookings,
+            step_revenue_econ, step_revenue_bus
+        )
+
+        # Check termination
+        done = (
+            self.days_to_departure <= 0 or
+            (self.econ_sold >= self.econ_seats_total and 
+             self.bus_sold >= self.bus_seats_total)
+        )
         
-        # Check if done
-        done = (self.days_to_departure <= 0) or (self.seats_sold >= self.total_seats)
-        
-        # Info
+        terminated = done
+        truncated = False
+
+        # Info dictionary
         info = {
-            'seats_sold': self.seats_sold,
-            'total_revenue': self.total_revenue,
-            'current_price': self.current_price,
-            'bookings': bookings,
-            'disruption': self.current_disruption,
-            'load_factor': self.seats_sold / self.total_seats,
-            'competitor_avg': np.mean(list(self.competitor_prices.values()))
+            "route": self.route,
+            "day": self.max_days - self.days_to_departure,
+            "econ_price": self.econ_price,
+            "bus_price": self.bus_price,
+            "econ_sold": self.econ_sold,
+            "bus_sold": self.bus_sold,
+            "total_sold": self.econ_sold + self.bus_sold,
+            "econ_bookings": econ_bookings,
+            "bus_bookings": bus_bookings,
+            "revenue": self.total_revenue,
+            "load_factor": (self.econ_sold + self.bus_sold) / self.total_seats,
+            "disruption": self.current_disruption,
+            "econ_demand": econ_demand,
+            "bus_demand": bus_demand
         }
+
+        self.episode_history.append(info.copy())
+
+        return self._get_state(), reward, terminated, truncated, info
+
+    def _calculate_reward(self, econ_bookings, bus_bookings, 
+                          step_revenue_econ, step_revenue_bus):
+        """Multi-objective reward function"""
         
-        return self._get_state(), reward, done, info
-    
-    def _calculate_reward(self, bookings, revenue):
-        """
-        Calculate reward with realistic business objectives:
-        - Maximize revenue
-        - Maintain good load factor (80-85% target)
-        - Penalize empty seats near departure
-        """
-        reward = revenue / 1000  # Scale down
+        # Base reward: revenue (scaled)
+        reward = (step_revenue_econ + step_revenue_bus) / 1000.0
         
-        # Load factor bonus (target 80-85%)
-        load_factor = self.seats_sold / self.total_seats
-        if load_factor >= 0.80:
+        # Load factor bonus
+        load_factor = (self.econ_sold + self.bus_sold) / self.total_seats
+        
+        if 0.80 <= load_factor <= 0.85:
+            reward += 10
+        elif 0.75 <= load_factor < 0.80:
             reward += 5
+        elif load_factor > 0.85:
+            reward += 3
         
-        # Penalty for empty seats near departure
+        # Penalty for poor load factor near departure
         if self.days_to_departure < 7:
-            empty_seats = self.total_seats - self.seats_sold
             if load_factor < 0.6:
-                reward -= empty_seats * 0.5
-        
-        # Disruption handling penalty
-        if self.disruption_active:
-            if self.current_disruption == 'pilot_strike':
-                reward -= 10
-            elif self.current_disruption == 'weather':
+                empty_seats = self.total_seats - (self.econ_sold + self.bus_sold)
+                reward -= empty_seats * 0.8
+            elif load_factor < 0.7:
                 reward -= 5
         
+        # Early sell-out penalty
+        if self.econ_sold >= self.econ_seats_total and self.days_to_departure > 30:
+            reward -= 15
+        
+        # Disruption handling
+        if self.current_disruption == "pilot_strike":
+            reward -= 8
+        elif self.current_disruption == "weather":
+            reward -= 4
+        elif self.current_disruption == "competitor_cancel":
+            if econ_bookings + bus_bookings > 5:
+                reward += 5
+        
+        # Business class premium
+        if bus_bookings > 0:
+            reward += bus_bookings * 0.5
+        
         return reward
-    
-    def render(self, mode='human'):
-        """Render environment state"""
-        print(f"\n=== Day {self.max_days - self.days_to_departure} ===")
-        print(f"Route: {self.route}")
-        print(f"Days to Departure: {self.days_to_departure}")
-        print(f"Current Price: ₹{self.current_price:.0f}")
-        print(f"Competitor Avg: ₹{np.mean(list(self.competitor_prices.values())):.0f}")
-        print(f"Seats Sold: {self.seats_sold}/{self.total_seats}")
-        print(f"Load Factor: {(self.seats_sold/self.total_seats)*100:.1f}%")
-        print(f"Total Revenue: ₹{self.total_revenue:.0f}")
-        print(f"Disruption: {self.current_disruption}")
-    
-    @classmethod
-    def from_data(cls, filepath, route):
-        """
-        Create environment from flight data file
-        Automatically calibrates using real data
-        """
-        print(f"\n🔧 Creating calibrated environment for {route}...")
-        df = pd.read_csv(filepath)
-        return cls(route=route, flight_data=df)
+
+    def render(self, mode="human"):
+        """Display current state"""
+        load_factor = (self.econ_sold + self.bus_sold) / self.total_seats
+        
+        print(f"\n{'='*60}")
+        print(f"Route: {self.route} | Day {self.max_days - self.days_to_departure}/{self.max_days}")
+        print(f"{'='*60}")
+        print(f"Economy:  ₹{self.econ_price:,.0f} | Sold: {self.econ_sold}/{self.econ_seats_total} ({self.econ_sold/self.econ_seats_total*100:.1f}%)")
+        print(f"Business: ₹{self.bus_price:,.0f} | Sold: {self.bus_sold}/{self.bus_seats_total} ({self.bus_sold/self.bus_seats_total*100:.1f}%)")
+        print(f"Load Factor: {load_factor*100:.1f}%")
+        print(f"Revenue: ₹{self.total_revenue:,.0f} (E: ₹{self.revenue_econ:,.0f}, B: ₹{self.revenue_bus:,.0f})")
+        if self.current_disruption != "none":
+            print(f"⚠️ Disruption: {self.current_disruption} ({self.disruption_duration} days left)")
+        print(f"{'='*60}")
+
+    def get_episode_summary(self):
+        """Return summary statistics for completed episode"""
+        return {
+            "route": self.route,
+            "total_revenue": self.total_revenue,
+            "econ_revenue": self.revenue_econ,
+            "bus_revenue": self.revenue_bus,
+            "load_factor": (self.econ_sold + self.bus_sold) / self.total_seats,
+            "econ_load_factor": self.econ_sold / self.econ_seats_total,
+            "bus_load_factor": self.bus_sold / self.bus_seats_total,
+            "final_econ_price": self.econ_price,
+            "final_bus_price": self.bus_price,
+            "history": self.episode_history
+        }
 
 
-# Example usage
+# =================================================
+# TESTING
+# =================================================
 if __name__ == "__main__":
     print("="*70)
-    print("  TESTING CALIBRATED ENVIRONMENT")
+    print("  TESTING ENHANCED MULTI-ROUTE MULTI-CLASS ENVIRONMENT")
     print("="*70)
     
-    # Test with data file if it exists
-    if os.path.exists('data/flight_data.csv'):
-        print("\n✓ Found real flight data!")
-        env = AirlineRevenueEnv.from_data('data/flight_data.csv', 'Delhi-Mumbai')
-    else:
-        print("\n⚠️  No flight data found, using defaults")
-        env = AirlineRevenueEnv(route='Delhi-Mumbai')
-    
-    # Test environment
-    state = env.reset()
-    print(f"\nInitial State: {state}")
-    
-    print("\n🎮 Running 5 test steps...")
-    for i in range(5):
-        action = env.action_space.sample()
-        state, reward, done, info = env.step(action)
-        env.render()
-        print(f"Reward: {reward:.2f}")
+    try:
+        # Create environment
+        env = AirlineRevenueEnv(route_stats_path="data/route_stats.pkl")
         
-        if done:
-            print("\n✓ Episode finished!")
-            break
+        # Test episode
+        print("\n🎮 Running test episode...")
+        state = env.reset()
+        print(f"Initial state shape: {state.shape}")
+        print(f"Selected route: {env.route}")
+        
+        total_reward = 0
+        for step in range(10):
+            action = env.action_space.sample()
+            state, reward, done, info = env.step(action)
+            total_reward += reward
+            
+            if step % 3 == 0:
+                env.render()
+            
+            if done:
+                print(f"\n✓ Episode finished at step {step+1}")
+                break
+        
+        print(f"\nTotal reward: {total_reward:.2f}")
+        summary = env.get_episode_summary()
+        print(f"Final load factor: {summary['load_factor']*100:.1f}%")
+        print(f"Total revenue: ₹{summary['total_revenue']:,.0f}")
+        
+    except FileNotFoundError as e:
+        print(f"\n❌ {e}")
+        print("Please run data calibration first to generate route_stats.pkl")
     
     print("\n" + "="*70)
-    print("  ✓ ENVIRONMENT TEST COMPLETE")
+    print("  ✓ TEST COMPLETE")
     print("="*70)
