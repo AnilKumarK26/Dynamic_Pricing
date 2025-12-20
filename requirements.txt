@@ -1,0 +1,14 @@
+flask==3.0.0
+gunicorn==21.2.0
+
+numpy==1.26.4
+pandas==2.2.2
+matplotlib==3.9.0
+
+torch==2.2.2
+gymnasium==0.29.1
+
+tqdm==4.66.4
+scikit-learn==1.5.1
+
+python-dotenv==1.0.1
