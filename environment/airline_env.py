@@ -85,6 +85,7 @@ class AirlineRevenueEnv(gym.Env):
         # Disruption system
         self.disruption_types = ["none", "weather", "pilot_strike", "competitor_cancel"]
         self.disruption_probability = 0.05
+        self.prev_action = None
 
         print(f"✓ Environment initialized")
         print(f"  - Action space: {self.action_space.n} joint pricing actions")
@@ -150,6 +151,7 @@ class AirlineRevenueEnv(gym.Env):
 
         # History
         self.episode_history = []
+        self.prev_action = None
 
         return self._get_state(), {}
 
@@ -329,6 +331,10 @@ class AirlineRevenueEnv(gym.Env):
             econ_bookings, bus_bookings,
             step_revenue_econ, step_revenue_bus
         )
+        
+        if self.prev_action is not None:
+            if action == self.prev_action:
+                reward -= 8.0
 
         # Check termination
         done = (
@@ -359,6 +365,8 @@ class AirlineRevenueEnv(gym.Env):
         }
 
         self.episode_history.append(info.copy())
+        self.prev_action = action
+
 
         return self._get_state(), reward, terminated, truncated, info
 
