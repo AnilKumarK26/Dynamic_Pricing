@@ -1,4 +1,4 @@
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request,send_from_directory
 import numpy as np
 import torch
 import os
@@ -170,8 +170,23 @@ def load_rl_system():
 rl_system_loaded = load_rl_system()
 
 @app.route('/')
-def index():
+def landing():
+    """Landing page with architecture and performance"""
+    return render_template('landing.html')
+
+@app.route('/control')
+def control():
+    """Simulation control dashboard"""
     return render_template('index.html')
+
+@app.route('/api/evaluation_log')
+def evaluation_log():
+    with open('results/evaluation_log.txt', 'r', encoding='utf-8') as f:
+        return f.read(), 200, {'Content-Type': 'text/plain; charset=utf-8'}
+    
+@app.route('/results/<path:filename>')
+def serve_results(filename):
+    return send_from_directory('results', filename)
 
 @app.route('/api/state')
 def get_state():
