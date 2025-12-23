@@ -568,3 +568,348 @@ function showToast(message, type = 'info') {
 }
 
 setTimeout(getAIRecommendation, 1000);
+
+// ============================================================================
+// COMPARISON PANEL FUNCTIONALITY
+// Add this to the END of your dashboard.js file
+// ============================================================================
+
+let comparisonChart = null;
+let comparisonData = null;
+
+/**
+ * Toggle comparison panel visibility
+ */
+function toggleComparison() {
+    const overlay = document.getElementById('comparison-overlay');
+    const panel = document.getElementById('comparison-panel');
+    
+    overlay.classList.add('active');
+    panel.classList.add('active');
+    
+    // Load cached results if available
+    loadCachedComparison();
+}
+
+/**
+ * Close comparison panel
+ */
+function closeComparison() {
+    const overlay = document.getElementById('comparison-overlay');
+    const panel = document.getElementById('comparison-panel');
+    
+    overlay.classList.remove('active');
+    panel.classList.remove('active');
+}
+
+/**
+ * Run full comparison across all strategies
+ */
+async function runComparison() {
+    const btn = document.getElementById('run-comparison-btn');
+    const spinner = document.getElementById('loading-spinner');
+    const results = document.getElementById('comparison-results');
+    
+    btn.disabled = true;
+    btn.textContent = '⏳ Running...';
+    spinner.classList.add('active');
+    results.style.display = 'none';
+    
+    try {
+        const response = await fetch('/api/run_comparison', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ episodes: 10 })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            comparisonData = data.results;
+            displayComparisonResults(data.results);
+            showToast('✅ Comparison complete!', 'success');
+        } else {
+            showToast('❌ ' + (data.error || 'Comparison failed'), 'error');
+        }
+    } catch (error) {
+        console.error('Error running comparison:', error);
+        showToast('❌ Error running comparison', 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '🚀 Run Full Comparison (10 episodes each)';
+        spinner.classList.remove('active');
+    }
+}
+
+/**
+ * Load cached comparison results if available
+ */
+async function loadCachedComparison() {
+    try {
+        const response = await fetch('/api/get_comparison');
+        
+        if (response.ok) {
+            const data = await response.json();
+            if (data.success) {
+                comparisonData = data.results;
+                displayComparisonResults(data.results);
+            }
+        }
+    } catch (error) {
+        // No cached data available - that's fine
+        console.log('No cached comparison data');
+    }
+}
+
+/**
+ * Display comparison results in the panel
+ */
+function displayComparisonResults(results) {
+    const resultsContainer = document.getElementById('comparison-results');
+    const cardsContainer = document.getElementById('strategy-cards');
+    const summaryContainer = document.getElementById('comparison-summary');
+    const summaryContent = document.getElementById('summary-content');
+    
+    resultsContainer.style.display = 'block';
+    cardsContainer.innerHTML = '';
+    
+    // Display summary if RL agent is included
+    if (results.comparison_summary) {
+        const summary = results.comparison_summary;
+        summaryContainer.style.display = 'block';
+        
+        const improvement = summary.improvement_percent;
+        const isPositive = improvement > 0;
+        
+        summaryContent.innerHTML = `
+            <div class="summary-stat">
+                <div class="metric-label">RL Agent Revenue</div>
+                <div class="metric-value">₹${Math.round(summary.rl_revenue).toLocaleString()}</div>
+            </div>
+            <div class="summary-stat">
+                <div class="metric-label">Best Traditional (${summary.best_traditional.replace('_', ' ')})</div>
+                <div class="metric-value">₹${Math.round(summary.best_traditional_revenue).toLocaleString()}</div>
+            </div>
+            <div class="summary-stat">
+                <div class="metric-label">Improvement</div>
+                <div class="metric-value">
+                    <span class="improvement-badge ${isPositive ? 'positive' : 'negative'}">
+                        ${isPositive ? '📈' : '📉'} ${improvement > 0 ? '+' : ''}${improvement.toFixed(1)}%
+                    </span>
+                </div>
+            </div>
+        `;
+    } else {
+        summaryContainer.style.display = 'none';
+    }
+    
+    // Create strategy cards
+    const strategies = Object.entries(results).filter(([key]) => key !== 'comparison_summary');
+    
+    // Sort by revenue (RL first, then by performance)
+    strategies.sort((a, b) => {
+        if (a[0] === 'rl_agent') return -1;
+        if (b[0] === 'rl_agent') return 1;
+        return b[1].avg_revenue - a[1].avg_revenue;
+    });
+    
+    strategies.forEach(([strategyKey, metrics]) => {
+        const isRL = strategyKey === 'rl_agent';
+        const card = document.createElement('div');
+        card.className = `strategy-card ${isRL ? 'rl-card' : ''}`;
+        
+        card.innerHTML = `
+            <div class="strategy-name">
+                ${isRL ? '🤖' : '📋'} ${metrics.name}
+                <span class="strategy-badge ${isRL ? 'rl-badge' : ''}">${isRL ? 'RL AGENT' : 'TRADITIONAL'}</span>
+            </div>
+            <div class="strategy-metrics">
+                <div class="metric-item">
+                    <div class="metric-label">Avg Revenue</div>
+                    <div class="metric-value">₹${Math.round(metrics.avg_revenue).toLocaleString()}</div>
+                </div>
+                <div class="metric-item">
+                    <div class="metric-label">Load Factor</div>
+                    <div class="metric-value">${metrics.avg_load_factor.toFixed(1)}%</div>
+                </div>
+                <div class="metric-item">
+                    <div class="metric-label">Economy Load</div>
+                    <div class="metric-value">${metrics.avg_econ_load.toFixed(1)}%</div>
+                </div>
+                <div class="metric-item">
+                    <div class="metric-label">Business Load</div>
+                    <div class="metric-value">${metrics.avg_bus_load.toFixed(1)}%</div>
+                </div>
+            </div>
+        `;
+        
+        cardsContainer.appendChild(card);
+    });
+    
+    // Create comparison chart
+    createComparisonChart(results);
+}
+
+/**
+ * Create bar chart comparing all strategies
+ */
+function createComparisonChart(results) {
+    const ctx = document.getElementById('comparisonChart').getContext('2d');
+    
+    if (comparisonChart) {
+        comparisonChart.destroy();
+    }
+    
+    const strategies = Object.entries(results).filter(([key]) => key !== 'comparison_summary');
+    const labels = strategies.map(([key, data]) => data.name);
+    const revenues = strategies.map(([key, data]) => data.avg_revenue);
+    const loadFactors = strategies.map(([key, data]) => data.avg_load_factor);
+    
+    comparisonChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: 'Average Revenue (₹)',
+                    data: revenues,
+                    backgroundColor: strategies.map(([key]) => 
+                        key === 'rl_agent' ? 'rgba(16, 185, 129, 0.8)' : 'rgba(102, 126, 234, 0.6)'
+                    ),
+                    borderColor: strategies.map(([key]) => 
+                        key === 'rl_agent' ? '#10b981' : '#667eea'
+                    ),
+                    borderWidth: 2,
+                    yAxisID: 'y',
+                },
+                {
+                    label: 'Load Factor (%)',
+                    data: loadFactors,
+                    type: 'line',
+                    borderColor: '#f59e0b',
+                    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                    borderWidth: 3,
+                    pointRadius: 5,
+                    pointBackgroundColor: '#f59e0b',
+                    yAxisID: 'y1',
+                    tension: 0.4
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            interaction: {
+                mode: 'index',
+                intersect: false,
+            },
+            plugins: {
+                legend: { 
+                    display: true,
+                    labels: { color: '#cbd5e1', font: { size: 12 } }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            let label = context.dataset.label || '';
+                            if (label) {
+                                label += ': ';
+                            }
+                            if (context.dataset.yAxisID === 'y') {
+                                label += '₹' + context.parsed.y.toLocaleString();
+                            } else {
+                                label += context.parsed.y.toFixed(1) + '%';
+                            }
+                            return label;
+                        }
+                    }
+                }
+            },
+            scales: {
+                y: {
+                    type: 'linear',
+                    display: true,
+                    position: 'left',
+                    beginAtZero: true,
+                    ticks: {
+                        color: '#cbd5e1',
+                        callback: function(value) {
+                            return '₹' + (value / 1000).toFixed(0) + 'K';
+                        }
+                    },
+                    grid: { color: 'rgba(203, 213, 225, 0.1)' },
+                    title: {
+                        display: true,
+                        text: 'Revenue (₹)',
+                        color: '#cbd5e1'
+                    }
+                },
+                y1: {
+                    type: 'linear',
+                    display: true,
+                    position: 'right',
+                    min: 0,
+                    max: 100,
+                    ticks: {
+                        color: '#f59e0b',
+                        callback: function(value) {
+                            return value.toFixed(0) + '%';
+                        }
+                    },
+                    grid: {
+                        drawOnChartArea: false,
+                    },
+                    title: {
+                        display: true,
+                        text: 'Load Factor (%)',
+                        color: '#f59e0b'
+                    }
+                },
+                x: {
+                    ticks: { 
+                        color: '#cbd5e1', 
+                        maxRotation: 45, 
+                        minRotation: 45 
+                    },
+                    grid: { color: 'rgba(203, 213, 225, 0.1)' }
+                }
+            }
+        }
+    });
+}
+
+/**
+ * Test a single traditional strategy
+ * (Optional - for live testing)
+ */
+async function testTraditionalStrategy(strategyName) {
+    try {
+        const response = await fetch('/api/test_traditional', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ strategy: strategyName })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showToast(data.message, 'success');
+            console.log('Traditional strategy test:', data);
+        } else {
+            showToast('❌ ' + (data.error || 'Test failed'), 'error');
+        }
+    } catch (error) {
+        console.error('Error testing strategy:', error);
+        showToast('❌ Error testing strategy', 'error');
+    }
+}
+
+// Export functions for external use
+window.comparisonFunctions = {
+    toggleComparison,
+    closeComparison,
+    runComparison,
+    loadCachedComparison,
+    testTraditionalStrategy
+};
+
+console.log('✅ Comparison panel functionality loaded');

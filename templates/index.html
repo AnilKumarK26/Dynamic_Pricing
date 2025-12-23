@@ -10,76 +10,6 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     
-    <style>
-        /* Route Selector Styling */
-        .route-selector-container {
-            margin-top: 15px;
-            padding: 15px;
-            background: rgba(0, 0, 0, 0.3);
-            border-radius: 10px;
-        }
-        
-        .route-selector-label {
-            font-size: 0.9rem;
-            color: var(--text-secondary);
-            margin-bottom: 8px;
-            font-weight: 600;
-            display: block;
-        }
-        
-        #route-selector {
-            width: 100%;
-            padding: 12px 15px;
-            font-size: 0.95rem;
-            font-weight: 600;
-            background: var(--card-bg);
-            color: var(--text-primary);
-            border: 2px solid var(--border-color);
-            border-radius: 8px;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            
-            /* Scrollable dropdown with max 5 visible items */
-            max-height: 200px;
-            overflow-y: auto;
-        }
-        
-        #route-selector:hover {
-            border-color: var(--primary-color);
-            background: var(--hover-bg);
-        }
-        
-        #route-selector:focus {
-            outline: none;
-            border-color: var(--primary-color);
-            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
-        }
-        
-        #route-selector option {
-            padding: 10px;
-            background: var(--card-bg);
-            color: var(--text-primary);
-        }
-        
-        #route-selector option:hover {
-            background: var(--hover-bg);
-        }
-        
-        /* Scrollbar for dropdown */
-        #route-selector::-webkit-scrollbar {
-            width: 8px;
-        }
-        
-        #route-selector::-webkit-scrollbar-track {
-            background: rgba(0, 0, 0, 0.3);
-            border-radius: 4px;
-        }
-        
-        #route-selector::-webkit-scrollbar-thumb {
-            background: var(--primary-color);
-            border-radius: 4px;
-        }
-    </style>
 </head>
 <body>
     <div class="container">
@@ -383,6 +313,67 @@
 
     <!-- TOAST NOTIFICATION -->
     <div id="toast" class="toast"></div>
+
+    <button class="comparison-toggle-btn" onclick="toggleComparison()">
+        📊 Compare with Traditional Models
+    </button>
+
+    <!-- Comparison Panel Overlay -->
+    <div class="comparison-overlay" id="comparison-overlay" onclick="closeComparison()"></div>
+
+    <!-- Comparison Panel (Hidden by Default) -->
+    <div class="comparison-panel" id="comparison-panel">
+        <div class="comparison-header">
+            <div class="comparison-title">
+                📊 RL vs Traditional Pricing Strategies
+            </div>
+            <button class="close-comparison-btn" onclick="closeComparison()">
+                ✕ Close
+            </button>
+        </div>
+        
+        <div class="comparison-controls">
+            <button class="comparison-btn run-comparison-btn" id="run-comparison-btn" onclick="runComparison()">
+                🚀 Run Full Comparison (10 episodes each)
+            </button>
+            <div style="flex: 1; font-size: 0.85rem; color: #94a3b8; display: flex; align-items: center;">
+                ⏱️ This will take 1-2 minutes. Results will show which strategy performs best.
+            </div>
+        </div>
+        
+        <!-- Loading Spinner -->
+        <div class="loading-spinner" id="loading-spinner">
+            <div class="spinner"></div>
+            <p style="color: #94a3b8; font-size: 1.1rem;">
+                Running comparison across all strategies...<br>
+                <small>Evaluating 10 episodes per strategy</small>
+            </p>
+        </div>
+        
+        <!-- Results Container -->
+        <div id="comparison-results" style="display: none;">
+            <!-- Summary Section -->
+            <div class="comparison-summary" id="comparison-summary" style="display: none;">
+                <div class="summary-title">
+                    🏆 Performance Summary
+                </div>
+                <div class="summary-content" id="summary-content">
+                    <!-- Populated by JavaScript -->
+                </div>
+            </div>
+            
+            <!-- Strategy Cards Grid -->
+            <div class="comparison-grid" id="strategy-cards">
+                <!-- Populated by JavaScript -->
+            </div>
+            
+            <!-- Comparison Chart -->
+            <div class="comparison-chart-container">
+                <h3 style="color: #fff; margin-bottom: 15px;">📈 Revenue Comparison</h3>
+                <canvas id="comparisonChart"></canvas>
+            </div>
+        </div>
+    </div>
 
     <!-- JAVASCRIPT -->
     <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>

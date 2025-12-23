@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from agents.model import DQNAgent
 from environment.airline_env import AirlineRevenueEnv
 from config.config import AGENT_CONFIG, compute_state_size
+from baselines.traditional_pricing import TRADITIONAL_STRATEGIES, compare_all_strategies
 
 app = Flask(__name__)
 app.secret_key = 'airline_rl_multiclass_secret_key_2024'
@@ -17,6 +18,7 @@ app.secret_key = 'airline_rl_multiclass_secret_key_2024'
 rl_agent = None
 rl_env = None
 agent_loaded = False
+comparison_results = None
 
 class RLSimulationState:
     """Wrapper around the actual RL environment"""
@@ -417,6 +419,177 @@ def get_agent_info():
     }
     
     return jsonify(info)
+
+@app.route('/api/run_comparison', methods=['POST'])
+def run_comparison():
+    """
+    Run comprehensive comparison between RL agent and traditional strategies
+    This will take some time (10 episodes per strategy)
+    """
+    global comparison_results
+    
+    if not rl_system_loaded or rl_env is None:
+        return jsonify({'error': 'RL system not loaded'}), 500
+    
+    try:
+        data = request.json
+        num_episodes = data.get('episodes', 10)
+        
+        print(f"\n🔄 Running comparison with {num_episodes} episodes per strategy...")
+        
+        # Run comparison
+        comparison_results = compare_all_strategies(
+            env=rl_env,
+            rl_agent=rl_agent if agent_loaded else None,
+            num_episodes=num_episodes
+        )
+        
+        # Format results for frontend
+        formatted_results = {}
+        
+        for strategy_name, metrics in comparison_results.items():
+            formatted_results[strategy_name] = {
+                'name': strategy_name.replace('_', ' ').title(),
+                'avg_revenue': float(metrics['avg_revenue']),
+                'std_revenue': float(metrics['std_revenue']),
+                'avg_load_factor': float(metrics['avg_load_factor'] * 100),
+                'avg_econ_load': float(metrics['avg_econ_load'] * 100),
+                'avg_bus_load': float(metrics['avg_bus_load'] * 100),
+                'revenues': [float(r) for r in metrics['revenues']],
+                'load_factors': [float(lf * 100) for lf in metrics['load_factors']]
+            }
+        
+        # Calculate RL improvement if available
+        if 'rl_agent' in formatted_results and agent_loaded:
+            rl_revenue = formatted_results['rl_agent']['avg_revenue']
+            
+            # Find best traditional strategy
+            traditional_strategies = [k for k in formatted_results.keys() if k != 'rl_agent']
+            best_traditional = max(traditional_strategies, 
+                                  key=lambda k: formatted_results[k]['avg_revenue'])
+            best_trad_revenue = formatted_results[best_traditional]['avg_revenue']
+            
+            improvement = ((rl_revenue - best_trad_revenue) / best_trad_revenue) * 100
+            
+            formatted_results['comparison_summary'] = {
+                'rl_revenue': rl_revenue,
+                'best_traditional': best_traditional,
+                'best_traditional_revenue': best_trad_revenue,
+                'improvement_percent': float(improvement),
+                'rl_advantage': rl_revenue > best_trad_revenue
+            }
+        
+        return jsonify({
+            'success': True,
+            'results': formatted_results,
+            'num_episodes': num_episodes,
+            'message': f'Comparison complete: {len(formatted_results)} strategies evaluated'
+        })
+        
+    except Exception as e:
+        print(f"Error running comparison: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/get_comparison')
+def get_comparison():
+    """
+    Get cached comparison results (if available)
+    """
+    if comparison_results is None:
+        return jsonify({'error': 'No comparison results available. Run comparison first.'}), 404
+    
+    # Format results for frontend
+    formatted_results = {}
+    
+    for strategy_name, metrics in comparison_results.items():
+        formatted_results[strategy_name] = {
+            'name': strategy_name.replace('_', ' ').title(),
+            'avg_revenue': float(metrics['avg_revenue']),
+            'std_revenue': float(metrics['std_revenue']),
+            'avg_load_factor': float(metrics['avg_load_factor'] * 100),
+            'avg_econ_load': float(metrics['avg_econ_load'] * 100),
+            'avg_bus_load': float(metrics['avg_bus_load'] * 100),
+            'revenues': [float(r) for r in metrics['revenues']],
+            'load_factors': [float(lf * 100) for lf in metrics['load_factors']]
+        }
+    
+    # Calculate RL improvement if available
+    if 'rl_agent' in formatted_results and agent_loaded:
+        rl_revenue = formatted_results['rl_agent']['avg_revenue']
+        
+        # Find best traditional strategy
+        traditional_strategies = [k for k in formatted_results.keys() if k != 'rl_agent']
+        best_traditional = max(traditional_strategies, 
+                              key=lambda k: formatted_results[k]['avg_revenue'])
+        best_trad_revenue = formatted_results[best_traditional]['avg_revenue']
+        
+        improvement = ((rl_revenue - best_trad_revenue) / best_trad_revenue) * 100
+        
+        formatted_results['comparison_summary'] = {
+            'rl_revenue': rl_revenue,
+            'best_traditional': best_traditional,
+            'best_traditional_revenue': best_trad_revenue,
+            'improvement_percent': float(improvement),
+            'rl_advantage': rl_revenue > best_trad_revenue
+        }
+    
+    return jsonify({
+        'success': True,
+        'results': formatted_results
+    })
+
+
+@app.route('/api/test_traditional', methods=['POST'])
+def test_traditional():
+    """
+    Test a single traditional strategy for one episode
+    """
+    if not rl_system_loaded or sim_state is None:
+        return jsonify({'error': 'RL system not loaded'}), 500
+    
+    data = request.json
+    strategy_name = data.get('strategy', 'rule_based')
+    
+    if strategy_name not in TRADITIONAL_STRATEGIES:
+        return jsonify({'error': f'Unknown strategy: {strategy_name}'}), 400
+    
+    try:
+        strategy_fn = TRADITIONAL_STRATEGIES[strategy_name]
+        
+        # Reset environment
+        sim_state.reset()
+        
+        total_reward = 0
+        actions_taken = []
+        
+        # Run one episode
+        while not sim_state.done:
+            action = strategy_fn(sim_state.env)
+            next_state, reward, done, info = sim_state.step(action)
+            
+            total_reward += reward
+            actions_taken.append(action)
+        
+        summary = sim_state.env.get_episode_summary()
+        
+        return jsonify({
+            'success': True,
+            'strategy': strategy_name.replace('_', ' ').title(),
+            'total_revenue': float(summary['total_revenue']),
+            'load_factor': float(summary['load_factor'] * 100),
+            'econ_load': float(summary['econ_load_factor'] * 100),
+            'bus_load': float(summary['bus_load_factor'] * 100),
+            'total_reward': float(total_reward),
+            'actions_taken': len(actions_taken),
+            'message': f'{strategy_name.replace("_", " ").title()} completed: ₹{summary["total_revenue"]:,.0f} revenue'
+        })
+        
+    except Exception as e:
+        print(f"Error testing traditional strategy: {e}")
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     print("\n" + "="*80)
