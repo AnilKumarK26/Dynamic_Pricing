@@ -3,7 +3,7 @@
 # Airline RL Project Startup Script (Pip -> UV Integrated)
 
 echo "=========================================="
-echo "  🚀 Starting Airline RL System"
+echo "  🚀 Airline RL – Setup (run.sh) + Run (Docker)"
 echo "=========================================="
 
 # 0. Check for and install uv via pip if missing
@@ -24,13 +24,13 @@ fi
 echo "✓ Using command: $UV_CMD"
 
 # 1. Setup structure
-echo -e "\n[1/5] Checking project structure..."
+echo -e "\n[1/4] Checking project structure..."
 python3 setup.py <<EOF
 y
 EOF
 
 # 2. Create and prepare virtual environment
-echo -e "\n[2/5] Setting up virtual environment..."
+echo -e "\n[2/4] Setting up virtual environment..."
 if [ ! -d ".venv" ]; then
     $UV_CMD venv
 fi
@@ -39,11 +39,11 @@ fi
 source .venv/bin/activate
 
 # 3. Install dependencies
-echo -e "\n[3/5] Syncing dependencies..."
+echo -e "\n[3/4] Syncing dependencies..."
 $UV_CMD pip install -r requirements.txt
 
 # 4. Calibrate data
-echo -e "\n[4/5] Calibrating environment from data..."
+echo -e "\n[4/4] Calibrating environment from data..."
 if [ -f "data/flight_data.csv" ] || [ -f "data/sample_data.csv" ]; then
     # Use sample data if real data isn't there yet
     if [ ! -f "data/flight_data.csv" ] && [ -f "data/sample_data.csv" ]; then
@@ -55,6 +55,17 @@ else
     exit 1
 fi
 
-# 5. Start Flask App
-echo -e "\n[5/5] Starting Dashboard..."
-python3 app.py
+echo ""
+echo "=========================================="
+echo "  ✅ Setup complete!"
+echo "=========================================="
+echo ""
+echo "  Run the app with Docker Compose:"
+echo "    docker compose up --build"
+echo ""
+echo "  Or in the background:  docker compose up --build -d"
+echo ""
+echo "  Then open: http://localhost:8080"
+echo ""
+echo "  Or run locally:  python3 app.py"
+echo ""

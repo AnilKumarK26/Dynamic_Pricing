@@ -16,16 +16,16 @@ WORKDIR /app
 # Copy only requirements first (better caching)
 COPY requirements.txt .
 
-# Upgrade pip and install dependencies
-RUN pip install --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+# Install uv and use it to install dependencies (faster, lockfile-friendly)
+RUN pip install uv \
+    && uv pip install --system -r requirements.txt
 
 # Copy full project
 COPY . .
 
-# Expose Flask port
-EXPOSE 5000
+# Expose Flask port (8080: universal on Windows/macOS/Linux)
+EXPOSE 8080
 
 # Start server with Gunicorn (production-ready)
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:5000", "--workers", "1", "--timeout", "120"]
+CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:8080", "--workers", "1", "--timeout", "120"]
 

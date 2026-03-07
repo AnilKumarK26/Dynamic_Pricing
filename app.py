@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agents.model import DQNAgent
 from environment.airline_env import AirlineRevenueEnv
-from config.config import AGENT_CONFIG, compute_state_size
+from config.config import AGENT_CONFIG, FLASK_CONFIG, compute_state_size
 from baselines.traditional_pricing import TRADITIONAL_STRATEGIES, compare_all_strategies
 
 app = Flask(__name__)
@@ -710,7 +710,7 @@ if __name__ == '__main__':
         print(f"\n  ❌ RL System: FAILED TO LOAD")
         print(f"     Run: python analyze_data.py")
 
-    print(f"\n  🌐 Dashboard: http://localhost:5000")
+    print(f"\n  🌐 Dashboard: http://localhost:5001")
     print(f"\n  📡 API Endpoints:")
     print(f"     GET  /api/state              Current RL env state")
     print(f"     GET  /api/routes             Available routes")
@@ -724,4 +724,7 @@ if __name__ == '__main__':
     print("\n" + "=" * 80 + "\n")
 
     # debug=False prevents double model loading on Flask reloader
-    app.run(debug=False, host='0.0.0.0', port=5000)
+    port = FLASK_CONFIG['port']
+    host = FLASK_CONFIG['host']
+    print(f"\n   Open in browser: http://localhost:{port}\n")
+    app.run(debug=False, host=host, port=port)

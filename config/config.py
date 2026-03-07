@@ -241,7 +241,7 @@ REWARD_CONFIG = {
 # =================================================
 FLASK_CONFIG = {
     'host': '0.0.0.0',
-    'port': 5000,
+    'port': 8080,  # 8080 avoids conflict with macOS AirPlay (5000) and is standard on Windows
     'debug': True,
     'secret_key': 'airline_rl_multiclass_secret_key_2024',
 }

@@ -98,7 +98,7 @@ def create_project_structure():
         print("   1. Install dependencies: pip install -r requirements.txt")
         print("   2. Add your flight data: data/flight_data.csv")
         print("   3. Run the app: python app.py")
-        print("   4. Open browser: http://localhost:5000")
+        print("   4. Open browser: http://localhost:8080")
     
     print()
 

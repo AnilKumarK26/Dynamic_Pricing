@@ -1,0 +1,10 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: dockerfile
+    image: dynamic-pricing
+    container_name: dynamic-pricing
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
