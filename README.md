@@ -41,13 +41,18 @@ Dynamic_Pricing/
 ├── utils/              # Data preprocessing and helper utilities
 ├── analyze_data.py     # Environment calibration script
 ├── app.py              # Main Flask application (Dashboard & API)
-├── dockerfile          # Containerization configuration
+├── dockerfile          # Container build (uses uv for dependencies)
+├── docker-compose.yml  # Run app via: docker compose up --build
 ├── requirements.txt    # Python dependencies
 ├── setup.py            # Project initialization script
-└── run.sh              # Automated startup script (macOS/Linux)
+└── run.sh              # One-time setup: structure, deps (uv), calibration
 ```
 
 ## 🛠️ Setup and Installation
+
+**Quick path:** Run `./run.sh` once—it does steps 1–3 below (structure, uv venv + deps, calibration). Then use **Docker Compose** or `python3 app.py` to start the app (see [Running the Project](#-running-the-project)).
+
+**Manual setup:**
 
 ### 1. Initialize Project
 ```bash
@@ -55,37 +60,39 @@ python setup.py
 ```
 
 ### 2. Install Dependencies (Using uv)
-We recommend using [uv](https://github.com/astral-sh/uv) for fast package management:
+We recommend [uv](https://github.com/astral-sh/uv) for fast package management:
 ```bash
 uv venv
-source .venv/bin/activate
+source .venv/bin/activate   # On Windows: .venv\Scripts\activate
 uv pip install -r requirements.txt
 ```
 
 ### 3. Calibrate Environment
-Ensure your flight data is in `data/flight_data.csv`. Then run:
+Put flight data in `data/flight_data.csv` (or use `data/sample_data.csv`). Then run:
 ```bash
 python analyze_data.py
 ```
-This generates `data/route_stats.pkl`, which "teaches" the RL environment about real-world price points and competitor behavior.
+This generates `data/route_stats.pkl`, which the RL environment uses for route-specific demand and competitor behavior.
 
 ## 🏃 Running the Project
 
-### Recommended: Setup with run.sh, then run with Docker
-1. **One-time setup** (project structure, dependencies, data calibration):
+### Recommended: Setup with run.sh, then run with Docker Compose
+1. **One-time setup** (project structure, dependencies via uv, data calibration):
    ```bash
    ./run.sh
    ```
-2. **Run the app** with Docker:
+   This creates `data/route_stats.pkl` and prints the next commands.
+
+2. **Run the app** with Docker Compose:
    ```bash
-   docker build -t dynamic-pricing .
-   docker run -p 8080:8080 dynamic-pricing
+   docker compose up --build
    ```
+   Or in the background: `docker compose up --build -d`  
    Open [http://localhost:8080](http://localhost:8080) in your browser.
 
 ### Run locally (no Docker)
 ```bash
-./run.sh   # if you haven't set up yet
+./run.sh        # if you haven't set up yet
 python3 app.py
 ```
 Open [http://localhost:8080](http://localhost:8080) in your browser.
@@ -106,8 +113,19 @@ python training/train.py
 - `POST /api/change_route`: Switch simulation to a different calibrated route.
 
 ## 🐋 Docker
-Run after `./run.sh` setup (see **Running the Project** above). Rebuild when you change code or data:
+
+The **dockerfile** uses [uv](https://github.com/astral-sh/uv) to install dependencies for faster builds. Run after `./run.sh` setup (see **Running the Project** above).
+
+**With Docker Compose (recommended):**
+```bash
+docker compose up --build
+# Or detached:  docker compose up --build -d
+```
+Then open [http://localhost:8080](http://localhost:8080). Stop with `Ctrl+C` or `docker compose down`.
+
+**Plain Docker:**
 ```bash
 docker build -t dynamic-pricing .
 docker run -p 8080:8080 dynamic-pricing
 ```
+Rebuild when you change code or data.
