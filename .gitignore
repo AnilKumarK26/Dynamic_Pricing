@@ -1,0 +1,57 @@
+# Byte-compiled / cache (Python)
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables
+.env
+.env.local
+*.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project: generated calibration (run analyze_data.py to recreate)
+data/route_stats.pkl
+data/calibration_summary.txt
+data/flight_data.csv
+
+# Project: training outputs and logs
+results/*.json
+results/*.png
+results/*.txt
+results/*.csv
+logs/*
+!logs/.gitkeep
+
+# Project: trained model checkpoints (large binaries)
+models/trained_models/*
+!models/trained_models/.gitkeep
+
+# uv
+.uv/
+uv.lock
+
+# Docker / build
+*.log
+dist/
+build/
+*.egg-info/
+*.egg
