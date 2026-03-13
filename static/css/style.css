@@ -493,16 +493,19 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none !important;
 
 .class-metrics {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    grid-template-columns: repeat(2, 1fr);
     gap: 16px;
     margin-bottom: 16px;
 }
 
 .metric-card.mini {
     background: rgba(255, 255, 255, 0.03);
-    padding: 16px;
+    padding: 20px;
     border-radius: 12px;
     border: 1px solid rgba(255, 255, 255, 0.05);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
 }
 
 .metric-label {
@@ -515,11 +518,12 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none !important;
 
 /* Number Rolling Effect Preparation */
 .metric-value {
-    font-size: 1.6rem;
+    font-size: 1.45rem;
     font-weight: 700;
     font-family: 'Space Grotesk', sans-serif;
     color: #fff;
     transition: color 0.3s ease;
+    word-break: break-word;
 }
 
 .metric-progress {
