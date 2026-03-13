@@ -1,5 +1,6 @@
 """
-Deep Q-Network (DQN) Agent for Multi-Route Multi-Class Airline Revenue Management
+Enhanced Dueling Deep Q-Network (DQN) Agent
+Multi-Route Multi-Class Airline Revenue Management
 File: agents/model.py
 """
 
@@ -7,168 +8,185 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from collections import deque
 import random
 import os
 
 
-class DQNNetwork(nn.Module):
-    """Enhanced Deep Q-Network for multi-route, multi-class pricing"""
+class DuelingDQNNetwork(nn.Module):
+    """
+    Dueling DQN Architecture.
+    Separates state-value (V) and advantage (A) estimation, which is highly
+    effective in pricing environments where many actions yield similar results.
+    """
     
     def __init__(self, state_size, action_size, hidden_size=256):
-        super(DQNNetwork, self).__init__()
+        super(DuelingDQNNetwork, self).__init__()
         
+        # Shared feature representation
         self.fc1 = nn.Linear(state_size, hidden_size)
-        self.ln1 = nn.LayerNorm(hidden_size)          # ← was BatchNorm1d
+        self.ln1 = nn.LayerNorm(hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
-        self.ln2 = nn.LayerNorm(hidden_size)          # ← was BatchNorm1d
-        self.fc3 = nn.Linear(hidden_size, hidden_size // 2)
-        self.ln3 = nn.LayerNorm(hidden_size // 2)     # ← was BatchNorm1d
-        self.fc4 = nn.Linear(hidden_size // 2, hidden_size // 2)
-        self.ln4 = nn.LayerNorm(hidden_size // 2)     # ← was BatchNorm1d
-        self.fc5 = nn.Linear(hidden_size // 2, action_size)
+        self.ln2 = nn.LayerNorm(hidden_size)
+        
+        # Value Stream (V)
+        self.value_fc1 = nn.Linear(hidden_size, hidden_size // 2)
+        self.value_ln1 = nn.LayerNorm(hidden_size // 2)
+        self.value_fc2 = nn.Linear(hidden_size // 2, 1)
+        
+        # Advantage Stream (A)
+        self.adv_fc1 = nn.Linear(hidden_size, hidden_size // 2)
+        self.adv_ln1 = nn.LayerNorm(hidden_size // 2)
+        self.adv_fc2 = nn.Linear(hidden_size // 2, action_size)
         
         self.leaky_relu = nn.LeakyReLU(0.01)
         self.dropout = nn.Dropout(0.2)
         
-        # Weight initialization for stable training
         self._initialize_weights()
         
     def _initialize_weights(self):
-        for layer in [self.fc1, self.fc2, self.fc3, self.fc4, self.fc5]:
-            nn.init.kaiming_normal_(layer.weight, nonlinearity='leaky_relu')
-            nn.init.constant_(layer.bias, 0)
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='leaky_relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
         
     def forward(self, x):
         if x.dim() == 1:
             x = x.unsqueeze(0)
-        
-        # No more batch-size checks needed — LayerNorm works for any size
+            
+        # Shared features
         x = self.leaky_relu(self.ln1(self.fc1(x)))
         x = self.dropout(x)
-        
         x = self.leaky_relu(self.ln2(self.fc2(x)))
         x = self.dropout(x)
         
-        x = self.leaky_relu(self.ln3(self.fc3(x)))
-        x = self.dropout(x)
+        # Value stream
+        v = self.leaky_relu(self.value_ln1(self.value_fc1(x)))
+        v = self.value_fc2(v)
         
-        x = self.leaky_relu(self.ln4(self.fc4(x)))
-        # No dropout before final layer
+        # Advantage stream
+        a = self.leaky_relu(self.adv_ln1(self.adv_fc1(x)))
+        a = self.adv_fc2(a)
         
-        x = self.fc5(x)
-        return x
+        # Recombine: Q(s,a) = V(s) + (A(s,a) - mean(A(s,a)))
+        q = v + (a - a.mean(dim=1, keepdim=True))
+        return q
 
 
-class PrioritizedReplayBuffer:
-    """Prioritized Experience Replay Buffer - FIXED for variable state shapes"""
+class StaticPrioritizedReplayBuffer:
+    """
+    High-Performance Static NumPy Prioritized Replay Buffer.
+    Eliminates dynamic list allocations and frequent `np.stack` operations.
+    Returns n-step experiences seamlessly.
+    """
     
-    def __init__(self, capacity=50000, alpha=0.6, beta=0.4, beta_increment=0.001):
+    def __init__(self, state_size, capacity=50000, alpha=0.6, beta=0.4, beta_increment=0.001):
         self.capacity = capacity
         self.alpha = alpha
         self.beta = beta
         self.beta_increment = beta_increment
         
-        self.buffer = []
-        self.priorities = []
+        # Pre-allocate static NumPy arrays
+        self.states      = np.zeros((capacity, state_size), dtype=np.float32)
+        self.actions     = np.zeros(capacity, dtype=np.int32)
+        self.rewards     = np.zeros(capacity, dtype=np.float32)
+        self.next_states = np.zeros((capacity, state_size), dtype=np.float32)
+        self.dones       = np.zeros(capacity, dtype=np.float32)
+        
+        # SumTree approximations for priorities (flattened array for speed)
+        self.priorities  = np.zeros(capacity, dtype=np.float32)
+        
         self.position = 0
+        self.size = 0
+        self.max_priority = 1.0
         
     def push(self, state, action, reward, next_state, done):
-        """Store transition - ensure states are numpy arrays"""
-        max_priority = max(self.priorities) if self.priorities else 1.0
+        """O(1) insertion into pre-allocated buffer."""
+        idx = self.position
         
-        # CRITICAL FIX: Convert states to numpy arrays immediately
-        state = np.array(state, dtype=np.float32)
-        next_state = np.array(next_state, dtype=np.float32)
+        self.states[idx]      = state
+        self.actions[idx]     = action
+        self.rewards[idx]     = reward
+        self.next_states[idx] = next_state
+        self.dones[idx]       = float(done)
         
-        if len(self.buffer) < self.capacity:
-            self.buffer.append((state, action, reward, next_state, done))
-            self.priorities.append(max_priority)
-        else:
-            self.buffer[self.position] = (state, action, reward, next_state, done)
-            self.priorities[self.position] = max_priority
+        self.priorities[idx]  = self.max_priority
         
         self.position = (self.position + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
     
     def sample(self, batch_size):
-        if len(self.buffer) < batch_size:
+        if self.size < batch_size:
             return None
-        
-        priorities = np.array(self.priorities[:len(self.buffer)])
+            
+        # Calculate probabilities
+        priorities = self.priorities[:self.size]
         probabilities = priorities ** self.alpha
         probabilities /= probabilities.sum()
         
-        indices = np.random.choice(len(self.buffer), batch_size, p=probabilities, replace=False)
-        samples = [self.buffer[idx] for idx in indices]
+        # Sample indices
+        indices = np.random.choice(self.size, batch_size, p=probabilities, replace=False)
         
-        total = len(self.buffer)
-        weights = (total * probabilities[indices]) ** (-self.beta)
-        weights /= weights.max()
-        
+        # Calculate importance sampling weights
         self.beta = min(1.0, self.beta + self.beta_increment)
-        
-        # CRITICAL FIX: Stack arrays properly
-        states, actions, rewards, next_states, dones = zip(*samples)
-        
-        # Convert to numpy arrays - states are already numpy arrays from push()
-        states = np.stack(states, axis=0)  # Stack instead of np.array()
-        next_states = np.stack(next_states, axis=0)
+        weights = (self.size * probabilities[indices]) ** (-self.beta)
+        weights /= weights.max()  # Normalize for stability
         
         return (
-            np.stack(states, axis=0),      # ← CHANGED
-            np.array(actions),
-            np.array(rewards),
-            np.stack(next_states, axis=0), # ← CHANGED
-            np.array(dones),
+            self.states[indices],
+            self.actions[indices],
+            self.rewards[indices],
+            self.next_states[indices],
+            self.dones[indices],
             indices,
             weights
         )
-    
+        
     def update_priorities(self, indices, priorities):
         for idx, priority in zip(indices, priorities):
             self.priorities[idx] = priority + 1e-5
-    
+            self.max_priority = max(self.max_priority, priority)
+            
     def __len__(self):
-        return len(self.buffer)
+        return self.size
 
 
-class ReplayBuffer:
-    """Standard Experience Replay Buffer - FIXED for variable state shapes"""
-    
-    def __init__(self, capacity=50000):
-        from collections import deque
-        self.buffer = deque(maxlen=capacity)
-    
+class NStepReplayBuffer(StaticPrioritizedReplayBuffer):
+    """
+    Extends Static Buffer with N-Step Returns calculation tracking.
+    Propagates deferred booking rewards backward n-steps efficiently.
+    """
+    def __init__(self, state_size, capacity=50000, n_step=3, gamma=0.99, **kwargs):
+        super().__init__(state_size, capacity, **kwargs)
+        self.n_step = n_step
+        self.gamma = gamma
+        self.n_step_buffer = []
+
     def push(self, state, action, reward, next_state, done):
-        """Store transition - ensure states are numpy arrays"""
-        # CRITICAL FIX: Convert states to numpy arrays immediately
-        state = np.array(state, dtype=np.float32)
-        next_state = np.array(next_state, dtype=np.float32)
+        self.n_step_buffer.append((state, action, reward, next_state, done))
         
-        self.buffer.append((state, action, reward, next_state, done))
-    
-    def sample(self, batch_size):
-        import random
-        batch = random.sample(self.buffer, batch_size)
-        states, actions, rewards, next_states, dones = zip(*batch)
-        
-        # CRITICAL FIX: Stack arrays properly
-        return (
-            np.stack(states, axis=0),      # ← CHANGED
-            np.array(actions), 
-            np.array(rewards), 
-            np.stack(next_states, axis=0), # ← CHANGED
-            np.array(dones),
-            None,
-            None
-        )
-    
-    def __len__(self):
-        return len(self.buffer)
+        if len(self.n_step_buffer) < self.n_step:
+            if not done: return
+            
+        while self.n_step_buffer:
+            reward_sum, n_state, n_done = self._calc_nstep()
+            s, a, _, _, _ = self.n_step_buffer.pop(0)
+            super().push(s, a, reward_sum, n_state, n_done)
+            
+            if not done and len(self.n_step_buffer) < self.n_step:
+                break
+                
+    def _calc_nstep(self):
+        reward_sum = 0
+        for i, transition in enumerate(self.n_step_buffer):
+            reward_sum += transition[2] * (self.gamma ** i)
+            if transition[4]: # if done
+                return reward_sum, transition[3], transition[4]
+        return reward_sum, self.n_step_buffer[-1][3], self.n_step_buffer[-1][4]
 
 
 class DQNAgent:
-    """Enhanced Deep Q-Learning Agent for Multi-Route Multi-Class Airline RM"""
+    """Enhanced Dueling DQN Agent with Soft Target Updates and N-Step Return support."""
     
     def __init__(self, state_size, action_size, 
                  learning_rate=0.0005, 
@@ -186,34 +204,15 @@ class DQNAgent:
                  gradient_clip=1.0,
                  learning_rate_decay=0.9,
                  lr_decay_step=200,
+                 n_step=3,         # ← N-Step support
+                 tau=0.005,        # ← Soft update factor
                  device=None):
-        """
-        Initialize Enhanced DQN Agent
-        
-        Args:
-            state_size: Dimension of state space
-            action_size: Number of actions
-            learning_rate: Learning rate for optimizer
-            gamma: Discount factor
-            epsilon: Initial exploration rate
-            epsilon_decay: Rate of epsilon decay
-            epsilon_min: Minimum epsilon value
-            batch_size: Size of training batches
-            hidden_size: Size of hidden layers
-            replay_buffer_size: Size of replay buffer
-            use_prioritized_replay: Use prioritized experience replay
-            priority_alpha: Prioritization exponent
-            priority_beta: Importance sampling exponent
-            priority_beta_increment: Beta increment per sample
-            gradient_clip: Gradient clipping value
-            learning_rate_decay: LR decay factor
-            lr_decay_step: Steps between LR decay
-            device: torch device (cpu/cuda)
-        """
         
         self.state_size = state_size
         self.action_size = action_size
         self.gamma = gamma
+        self.n_step = n_step
+        self.n_step_gamma = gamma ** n_step
         self.epsilon = epsilon
         self.epsilon_decay = epsilon_decay
         self.epsilon_min = epsilon_min
@@ -222,282 +221,173 @@ class DQNAgent:
         self.use_prioritized_replay = use_prioritized_replay
         self.gradient_clip = gradient_clip
         self.lr_decay_step = lr_decay_step
+        self.tau = tau
         
-        # Device setup
         if device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
             self.device = device
         
-        print(f"✓ DQN Agent initialized")
+        print(f"✓ Dueling DQN Agent initialized")
         print(f"  Device: {self.device}")
-        print(f"  State size: {state_size}")
-        print(f"  Action size: {action_size}")
-        print(f"  Hidden size: {hidden_size}")
-        print(f"  Replay buffer size: {replay_buffer_size}")
-        print(f"  Prioritized replay: {use_prioritized_replay}")
         
-        # Q-Networks
-        self.policy_net = DQNNetwork(state_size, action_size, hidden_size).to(self.device)
-        self.target_net = DQNNetwork(state_size, action_size, hidden_size).to(self.device)
+        # Networks (Dueling DQN)
+        self.policy_net = DuelingDQNNetwork(state_size, action_size, hidden_size).to(self.device)
+        self.target_net = DuelingDQNNetwork(state_size, action_size, hidden_size).to(self.device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
         
-        # Optimizer with learning rate scheduling
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=learning_rate)
         self.scheduler = optim.lr_scheduler.StepLR(
             self.optimizer, 
             step_size=lr_decay_step, 
             gamma=learning_rate_decay
         )
-        self.criterion = nn.SmoothL1Loss()
+        self.criterion = nn.SmoothL1Loss(reduction='none') # Don't mean yet, apply weights first
         
-        # Replay buffer
-        if use_prioritized_replay:
-            self.memory = PrioritizedReplayBuffer(
-                capacity=replay_buffer_size,
-                alpha=priority_alpha,
-                beta=priority_beta,
-                beta_increment=priority_beta_increment
-            )
-        else:
-            self.memory = ReplayBuffer(capacity=replay_buffer_size)
+        # Static Replay Buffer
+        self.memory = NStepReplayBuffer(
+            state_size=state_size,
+            capacity=replay_buffer_size,
+            n_step=n_step,
+            gamma=gamma,
+            alpha=priority_alpha,
+            beta=priority_beta,
+            beta_increment=priority_beta_increment
+        )
         
-        # Training statistics
         self.training_rewards = []
         self.losses = []
         self.episode_count = 0
         self.training_steps = 0
         
-        # Action mapping
         self.action_names = {
-            0: "E↓10% B↓10%",
-            1: "E↓10% B→",
-            2: "E↓10% B↑10%",
-            3: "E→ B↓10%",
-            4: "E→ B→",
-            5: "E→ B↑10%",
-            6: "E↑10% B↓10%",
-            7: "E↑10% B→",
-            8: "E↑10% B↑10%",
+            0: "E↓10% B↓10%", 1: "E↓10% B→",   2: "E↓10% B↑10%",
+            3: "E→ B↓10%",    4: "E→ B→",      5: "E→ B↑10%",
+            6: "E↑10% B↓10%", 7: "E↑10% B→",   8: "E↑10% B↑10%",
         }
         
     def select_action(self, state, training=True):
-        """Select action using epsilon-greedy policy"""
         if training and random.random() < self.epsilon:
             return random.randrange(self.action_size)
         
         with torch.no_grad():
-            # FIX: Ensure state is a numpy array first
             if not isinstance(state, np.ndarray):
-                state = np.array(state, dtype=np.float32)  # ← ADD THIS
+                state = np.array(state, dtype=np.float32)
             
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
             q_values = self.policy_net(state_tensor)
             return q_values.argmax().item()
     
     def store_transition(self, state, action, reward, next_state, done):
-        """Store transition in replay buffer"""
         self.memory.push(state, action, reward, next_state, done)
     
     def train_step(self):
-        """Perform one training step"""
         if len(self.memory) < self.batch_size:
             return None
         
         sample_result = self.memory.sample(self.batch_size)
+        if sample_result is None: return None
         
-        if sample_result is None:
-            return None
-        
-        if self.use_prioritized_replay:
-            states, actions, rewards, next_states, dones, indices, weights = sample_result
-            weights = torch.FloatTensor(weights).to(self.device)
-        else:
-            states, actions, rewards, next_states, dones, _, _ = sample_result
-            weights = torch.ones(self.batch_size).to(self.device)
+        # Data is already perfectly shaped NumPy arrays
+        states, actions, rewards, next_states, dones, indices, weights = sample_result
         
         states = torch.FloatTensor(states).to(self.device)
         actions = torch.LongTensor(actions).to(self.device)
         rewards = torch.FloatTensor(rewards).to(self.device)
         next_states = torch.FloatTensor(next_states).to(self.device)
         dones = torch.FloatTensor(dones).to(self.device)
+        weights = torch.FloatTensor(weights).to(self.device)
         
-        current_q_values = self.policy_net(states).gather(1, actions.unsqueeze(1))
-        
+        # Double DQN Calculation
         with torch.no_grad():
-            next_q_values = self.target_net(next_states).max(1)[0]
-            target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
+            # Action selection from Policy Net
+            best_next_actions = self.policy_net(next_states).argmax(1, keepdim=True)
+            # Action Evaluation from Target Net
+            next_q_values = self.target_net(next_states).gather(1, best_next_actions).squeeze()
+            
+            # Use n_step_gamma to scale next_states properly
+            target_q_values = rewards + (1 - dones) * self.n_step_gamma * next_q_values
+            
+        current_q_values = self.policy_net(states).gather(1, actions.unsqueeze(1)).squeeze()
         
-        td_errors = current_q_values.squeeze() - target_q_values
-        loss = (weights * self.criterion(
-            current_q_values.squeeze(),
-            target_q_values
-        )).mean()
+        td_errors = (current_q_values - target_q_values).abs().detach()
+
+        loss = (weights * self.criterion(current_q_values, target_q_values)).mean()
         
-        if self.use_prioritized_replay and indices is not None:
-            priorities = td_errors.abs().detach().cpu().numpy()
-            self.memory.update_priorities(indices, priorities)
+        # Update Priorities
+        self.memory.update_priorities(indices, td_errors.cpu().numpy())
         
         self.optimizer.zero_grad()
         loss.backward()
-        
         torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), self.gradient_clip)
-        
         self.optimizer.step()
         self.scheduler.step()
         
-        self.training_steps += 1
+        # Soft Update Target Network EVERY step
+        self._soft_update_target_network()
         
+        self.training_steps += 1
         return loss.item()
     
+    def _soft_update_target_network(self):
+        """Standard Polyak Averaging Soft Update"""
+        for target_param, policy_param in zip(self.target_net.parameters(), self.policy_net.parameters()):
+            target_param.data.copy_(self.tau * policy_param.data + (1.0 - self.tau) * target_param.data)
+            
     def update_target_network(self):
-        """Update target network"""
+        """Hard update fallback (rarely used, kept for compatibility)"""
         self.target_net.load_state_dict(self.policy_net.state_dict())
     
     def update_epsilon(self):
-        """Decay epsilon"""
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
     
     def save_model(self, filepath, include_optimizer=True):
-        """Save model"""
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        
         checkpoint = {
             'policy_net': self.policy_net.state_dict(),
             'target_net': self.target_net.state_dict(),
             'epsilon': self.epsilon,
             'episode_count': self.episode_count,
             'training_steps': self.training_steps,
-            'training_rewards': self.training_rewards,
-            'losses': self.losses,
             'state_size': self.state_size,
             'action_size': self.action_size,
-            'hidden_size': self.hidden_size
+            'hidden_size': self.hidden_size,
         }
-        
         if include_optimizer:
             checkpoint['optimizer'] = self.optimizer.state_dict()
             checkpoint['scheduler'] = self.scheduler.state_dict()
-        
         torch.save(checkpoint, filepath)
         print(f"💾 Model saved to {filepath}")
     
     def load_model(self, filepath, load_optimizer=True):
-        """Load model"""
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"Model file not found: {filepath}")
-        
         checkpoint = torch.load(filepath, map_location=self.device, weights_only=False)
-        
         self.policy_net.load_state_dict(checkpoint['policy_net'])
         self.target_net.load_state_dict(checkpoint['target_net'])
         self.epsilon = checkpoint.get('epsilon', self.epsilon_min)
         self.episode_count = checkpoint.get('episode_count', 0)
         self.training_steps = checkpoint.get('training_steps', 0)
-        self.training_rewards = checkpoint.get('training_rewards', [])
-        self.losses = checkpoint.get('losses', [])
         
         if load_optimizer and 'optimizer' in checkpoint:
             self.optimizer.load_state_dict(checkpoint['optimizer'])
         if load_optimizer and 'scheduler' in checkpoint:
             self.scheduler.load_state_dict(checkpoint['scheduler'])
-        
-        print(f"✓ Model loaded from {filepath}")
-        print(f"  Episodes trained: {self.episode_count}")
-        print(f"  Training steps: {self.training_steps}")
-        print(f"  Current epsilon: {self.epsilon:.4f}")
+        print(f"✓ Dueling Model loaded from {filepath}")
     
     def get_action_distribution(self, state):
-        """Get Q-values for all actions"""
         with torch.no_grad():
-            # FIX: Ensure state is a numpy array first
             if not isinstance(state, np.ndarray):
-                state = np.array(state, dtype=np.float32)  # ← ADD THIS
-            
+                state = np.array(state, dtype=np.float32)
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-            q_values = self.policy_net(state_tensor)
-            return q_values.cpu().numpy()[0]
+            return self.policy_net(state_tensor).cpu().numpy()[0]
     
     def get_best_action(self, state):
-        """Get best action without exploration"""
         with torch.no_grad():
-            # FIX: Ensure state is a numpy array first
             if not isinstance(state, np.ndarray):
-                state = np.array(state, dtype=np.float32)  # ← ADD THIS
-            
+                state = np.array(state, dtype=np.float32)
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
             q_values = self.policy_net(state_tensor)
             action = q_values.argmax().item()
-            q_value = q_values.max().item()
-            action_name = self.action_names.get(action, f"Action {action}")
-            return action, q_value, action_name
-
-# Example usage and testing
-if __name__ == "__main__":
-    print("="*70)
-    print("  MULTI-ROUTE MULTI-CLASS DQN AGENT - MODEL TESTING")
-    print("="*70)
-    
-    # Initialize agent with multi-route state size
-    # Example: 12 base features + 5 route one-hot = 17 total
-    state_size = 17  
-    action_size = 9  # 9 joint pricing actions
-    
-    agent = DQNAgent(
-        state_size=state_size, 
-        action_size=action_size,
-        use_prioritized_replay=True
-    )
-    
-    # Test action selection
-    print("\n1. Testing Action Selection:")
-    test_state = np.random.rand(state_size).astype(np.float32)
-    
-    action = agent.select_action(test_state, training=True)
-    print(f"   Selected action (with exploration): {action} - {agent.action_names[action]}")
-    
-    best_action, q_value, action_name = agent.get_best_action(test_state)
-    print(f"   Best action (greedy): {best_action} - {action_name} (Q={q_value:.2f})")
-    
-    # Test Q-values
-    print("\n2. Q-values for all actions:")
-    q_values = agent.get_action_distribution(test_state)
-    for i, (name, q) in enumerate(zip(agent.action_names.values(), q_values)):
-        print(f"   Action {i} ({name:>15}): Q = {q:>8.4f}")
-    
-    # Test memory operations
-    print("\n3. Testing Prioritized Replay Buffer:")
-    for i in range(100):
-        state = np.random.rand(state_size).astype(np.float32)
-        action = np.random.randint(action_size)
-        reward = np.random.rand()
-        next_state = np.random.rand(state_size).astype(np.float32)
-        done = i % 20 == 0
-        agent.store_transition(state, action, reward, next_state, done)
-    
-    print(f"   Buffer size: {len(agent.memory)}/50000")
-    
-    # Test training step
-    print("\n4. Testing Training Step:")
-    loss = agent.train_step()
-    if loss:
-        print(f"   Training loss: {loss:.4f}")
-    
-    # Test save/load
-    print("\n5. Testing Save/Load:")
-    test_path = "models/test_multiclass_model.pth"
-    agent.save_model(test_path)
-    
-    # Create new agent and load
-    new_agent = DQNAgent(state_size, action_size)
-    new_agent.load_model(test_path)
-    
-    # Cleanup
-    if os.path.exists(test_path):
-        os.remove(test_path)
-        print("   Test model file cleaned up")
-    
-    print("\n" + "="*70)
-    print("  ALL TESTS PASSED")
-    print("="*70)
+            return action, q_values.max().item(), self.action_names.get(action, f"Action {action}")

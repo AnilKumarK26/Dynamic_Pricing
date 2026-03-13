@@ -1,131 +1,128 @@
-# RL-Integrated Multi-Class Airline Dynamic Pricing Dashboard
+# RL-Integrated Multi-Class Airline Dynamic Pricing
 
-This project implements a Reinforcement Learning (RL) based Revenue Management (RM) system for airlines. It uses a Deep Q-Network (DQN) agent with Prioritized Experience Replay (PER) to optimize pricing for multiple seat classes (Economy and Business) across various routes, calibrated with real flight data.
+Welcome to the **Airline Dynamic Pricing** simulation, a high-performance reinforcement learning project built with Python and FastAPI. This project simulates a competitive airline market where an autonomous agent dictates pricing for multiple seat classes (Economy and Business) to maximize revenue across various routes. 
 
-## 🚀 Project Overview
+Our application architecture relies on advanced Deep Q-Networks (DQN) synchronized to a customized Gymnasium simulation environment and visualized seamlessly via a premium, aerospace-themed dashboard.
 
-The system simulates a competitive airline market where an RL agent learns to adjust prices dynamically based on:
-- **Days remaining** until departure (90-day horizon).
-- **Current occupancy** (Load Factor) for both Economy and Business classes.
-- **Competitor pricing strategies** (Dynamic market response).
-- **Market disruptions** (Weather, pilot strikes, competitor cancellations).
-- **Route-specific demand** (Calibrated from historical data).
+## 🚀 Advanced Codebase Architecture
 
-## ✨ Key Features
+This project strictly utilizes a **Modular Design** to cleanly separate the mathematical algorithms from the web interfaces and infrastructure logic. The codebase is broken down into specific domains:
 
-- **Multi-Class Optimization**: Jointly optimizes Economy and Business class pricing using a 9-action discrete space.
-- **Multi-Route Generalization**: Agent trains across dozens of routes, learning shared market dynamics while respecting route-specific nuances.
-- **Revenue-Dominant Reward (v3)**: A refined reward function that prioritizes total revenue (90% signal) over simple occupancy, ensuring the agent learns to maximize profit rather than just filling seats.
-- **Curriculum Learning**: Training follows a 3-phase curriculum:
-  1. **Phase 1**: High-traffic "easy" routes to learn basic pricing logic.
-  2. **Phase 2**: Expanded route set for broader generalization.
-  3. **Phase 3**: Full multi-route mastery across the entire network.
-- **Advanced RL Architecture**: DQN with LayerNorm, Dropout, and Prioritized Experience Replay for stable and efficient learning.
-- **Interactive Dashboard**: Real-time simulation control, AI recommendations, and automated strategy comparison (RL vs. Rule-based vs. Random).
+### 1. The Autonomous Brain (Reinforcement Learning)
+The agent operates via a **Dueling DQN** utilizing **Soft Updates** and **N-Step Returns**.
+* By factoring estimates into `Value` (how good the current state is) and `Advantage` (how good a specific action is compared to others), the Dueling architecture converges faster in environments with highly correlated action outcomes.
+* We leverage static, pre-allocated **NumPy Replay Buffers** to eliminate memory fragmentation during the sampling loops, vastly speeding up throughput.
 
-## 📂 Folder Structure
+### 2. The Simulation Environment
+Built on top of `gymnasium`, the `AirlineRevenueEnv` simulates dynamic aspects of the real world:
+* Tracks 90 days prior to flight departure.
+* Dynamically calibrates competitor strategy from generated or historical route statistics.
+* Handles unpredictable disruptions (weather, strikes, competitive surges).
+* Encapsulates state observation into vectorized spaces for lightning-fast training throughput.
 
-```text
+### 3. The Analytics Dashboard
+Built in **FastAPI** to eliminate synchronous polling bottlenecks present in traditional Flask setups. The frontend uses highly optimized HTML/JS, layered with complex CSS glassmorphism, glowing neons, and futuristic aerospace fonts (Space Grotesk & Inter) for a dazzling user experience.
+
+---
+
+## 📂 Modular Folder Structure
+
+The project directory is explicitly separated into domain-specific modules for clean scaling:
+
+```yaml
 Dynamic_Pricing/
-├── agents/             # DQN Agent implementation with PER
-├── baselines/          # Traditional pricing strategies (Rule-based, Random, etc.)
-├── config/             # Centralized Hyperparameters & Curriculum settings
-├── data/               # Input CSVs and calibrated route statistics (.pkl)
-├── environment/        # Gymnasium-based Airline Revenue Environment (v3)
-├── models/             # Storage for trained models and checkpoints
-│   └── trained_models/ # Best and final model checkpoints (.pth)
-├── results/            # Training visualizations, evaluation logs, and JSON stats
-├── static/             # Frontend assets (Tailwind-like CSS, JS, Lottie)
-├── templates/          # HTML templates for the Flask dashboard
-├── training/           # Training pipeline with Curriculum Learning support
-├── utils/              # Data preprocessing and helper utilities
-├── analyze_data.py     # Environment calibration script
-├── app.py              # Main Flask application (Dashboard & API)
-├── dockerfile          # Container build (uses uv for dependencies)
-├── docker-compose.yml  # Run app via: docker compose up --build
-├── requirements.txt    # Python dependencies
-├── setup.py            # Project initialization script
-└── run.sh              # One-time setup: structure, deps (uv), calibration
+│
+├── agents/                 # 🧠 Neural Net Intelligence
+│   ├── model.py            # Dueling DQN architecture, PyTorch NN definitions
+│   └── buffer.py           # Pre-allocated NumPy static Replay Buffer
+│
+├── baselines/              # 📊 Comparative Strategies
+│   └── traditional_pricing.py # Rule-based and random algorithmic benchmarks
+│
+├── config/                 # ⚙️ Centralized Settings
+│   └── config.py           # RL Hyperparameters, server configurations
+│
+├── data/                   # 💾 Raw & Calibrated Data
+│   ├── flight_data.csv     # Historical route info (or sample_data.csv)
+│   └── route_stats.pkl     # Calibrated statistics environment seed
+│
+├── environment/            # 🌍 World Simulation
+│   └── airline_env.py      # Gymnasium multi-class pricing simulation
+│
+├── models/                 # 💾 Saved Brains
+│   └── trained_models/     # Best/final serialized .pth PyTorch checkpoints
+│
+├── static/                 # 🎨 UI/UX Assets 
+│   ├── css/                # Glassmorphic, aerospace HUD dark themes
+│   ├── js/                 # Async dashboard handlers and Chart.js integrations
+│   └── images/             # Vector icons and graphics
+│
+├── templates/              # 🖥️ Web Pages
+│   ├── index.html          # Dashboard Jinja2 simulation template
+│   └── landing.html        # Futuristic entry portal
+│
+├── training/               # 🚂 Training Pipeline
+│   └── train.py            # Curriculum learning runner logic
+│
+├── utils/                  # 🛠️ Helper Functions
+│   └── data_loader.py      # Pandas DataFrame parsers
+│
+└── [Root Level Executables]
+    ├── app.py              # Main FastAPI / Uvicorn Server
+    ├── analyze_data.py     # Calibration execution script
+    ├── run.sh              # Unix terminal orchestration
+    ├── Dockerfile          # Container specification
+    ├── docker-compose.yml  # Container composition network
+    └── requirements.txt    # UV-optimized PIP dependencies
 ```
+
+---
 
 ## 🛠️ Setup and Installation
 
-**Quick path:** Run `./run.sh` once—it does steps 1–3 below (structure, uv venv + deps, calibration). Then use **Docker Compose** or `python3 app.py` to start the app (see [Running the Project](#-running-the-project)).
+### Recommended Setup (Automated via Unix)
+We recommend utilizing `uv` for blistering-fast dependency management through our integrated startup script:
 
-**Manual setup:**
-
-### 1. Initialize Project
-```bash
-python setup.py
-```
-
-### 2. Install Dependencies (Using uv)
-We recommend [uv](https://github.com/astral-sh/uv) for fast package management:
-```bash
-uv venv
-source .venv/bin/activate   # On Windows: .venv\Scripts\activate
-uv pip install -r requirements.txt
-```
-
-### 3. Calibrate Environment
-Put flight data in `data/flight_data.csv` (or use `data/sample_data.csv`). Then run:
-```bash
-python analyze_data.py
-```
-This generates `data/route_stats.pkl`, which the RL environment uses for route-specific demand and competitor behavior.
-
-## 🏃 Running the Project
-
-### Recommended: Setup with run.sh, then run with Docker Compose
-1. **One-time setup** (project structure, dependencies via uv, data calibration):
+1. **Initialize & Sync Dependencies**:
    ```bash
    ./run.sh
    ```
-   This creates `data/route_stats.pkl` and prints the next commands.
+   *This automatically sets up `uv`, creates a virtual environment, syncs the `requirements.txt`, and calibrates the `data/` folder.*
 
-2. **Run the app** with Docker Compose:
+2. **Launch via FastAPI App locally**:
    ```bash
-   docker compose up --build
+   python app.py
    ```
-   Or in the background: `docker compose up --build -d`  
-   Open [http://localhost:8080](http://localhost:8080) in your browser.
+   Open `http://127.0.0.1:8080` in your browser.
 
-### Run locally (no Docker)
+### Docker Initialization
+You can run the application synchronously in an isolated container utilizing the updated `uvicorn` entrypoints:
+
 ```bash
-./run.sh        # if you haven't set up yet
-python3 app.py
+# Build the container locally
+docker compose up --build
+
+# Or detach the process in the background
+docker compose up --build -d
 ```
-Open [http://localhost:8080](http://localhost:8080) in your browser.
 
-### Train the RL Agent
-To train the model from scratch using the Curriculum Learning strategy:
+---
+
+## 📡 Systems Flow & API
+
+The FastAPI server exposes endpoints designed for high-frequency async polling from the UI without locking up the RL agent inference models:
+
+- **`GET` /api/state**: Returns the current observation metrics for both Economy and Business.
+- **`GET` /api/ai_recommendation**: Performs a swift PyTorch Q-value spread operation to render the AI's confidence score and logic explanation.
+- **`POST` /api/run_comparison**: Executes headless synchronous simulations matching the RL agent against Rule-Based and Random strategies.
+- **`POST` /api/action**: Accepts the user's manual 9-action integer input and steps the primary simulation.
+
+## 🏃 Training the Agent
+
+If you wish to augment the RL agent from scratch and retrain the Neural Networks:
+
 ```bash
+source .venv/bin/activate
 python training/train.py
 ```
-*Note: Default training runs for 6000 episodes as per `config.py`.*
-
-## 📡 API Endpoints
-
-- `GET /api/state`: Current simulation state (prices, load, competitors).
-- `GET /api/ai_recommendation`: RL agent's best action with "reasoning" context.
-- `POST /api/run_comparison`: Batch evaluation of RL vs Traditional strategies.
-- `POST /api/action`: Manually execute a pricing action.
-- `POST /api/change_route`: Switch simulation to a different calibrated route.
-
-## 🐋 Docker
-
-The **dockerfile** uses [uv](https://github.com/astral-sh/uv) to install dependencies for faster builds. Run after `./run.sh` setup (see **Running the Project** above).
-
-**With Docker Compose (recommended):**
-```bash
-docker compose up --build
-# Or detached:  docker compose up --build -d
-```
-Then open [http://localhost:8080](http://localhost:8080). Stop with `Ctrl+C` or `docker compose down`.
-
-**Plain Docker:**
-```bash
-docker build -t dynamic-pricing .
-docker run -p 8080:8080 dynamic-pricing
-```
-Rebuild when you change code or data.
+*Note: Depending on your hardware accelerator (`MPS`, `CUDA`, or `CPU`), the 6000 episodes may take between 10 to 30 minutes.*

@@ -1,25 +1,20 @@
 """
-Flask Dashboard for RL-based Airline Revenue Management
+FastAPI Dashboard for RL-based Airline Revenue Management
 File: app.py
-
-FIXES (v3):
-- /api/run_comparison: default episodes changed from 50 → 10 (matches frontend)
-- /api/run_comparison: passes route_stats_path to env so traditional_pricing
-  can reconstruct fresh envs safely (no deepcopy)
-- /api/test_traditional: runs on a FRESH env (not the live sim_state) so the
-  live dashboard is never disrupted by a strategy test
-- rl_env now stores _route_stats_path attribute so compare_all_strategies
-  can use it when building fresh episode envs
-- debug=False enforced so model is not double-loaded on reload
 """
 
-from flask import Flask, render_template, jsonify, request, send_from_directory
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 import numpy as np
 import torch
 import os
 import pickle
 import sys
 import time
+from typing import Optional, Dict, Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -28,19 +23,20 @@ from environment.airline_env import AirlineRevenueEnv
 from config.config import AGENT_CONFIG, FLASK_CONFIG, compute_state_size
 from baselines.traditional_pricing import TRADITIONAL_STRATEGIES, compare_all_strategies
 
-app = Flask(__name__)
-app.secret_key = 'airline_rl_multiclass_secret_key_2024'
+app = FastAPI(title="Airline RL Dashboard")
+
+# Mount templates and static files
+templates = Jinja2Templates(directory="templates")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 rl_agent        = None
 rl_env          = None
 agent_loaded    = False
 comparison_results = None
 
-# ── Cache for /api/ai_recommendation to stop excessive polling ─────────────
 _rec_cache      = {}
 _rec_cache_time = 0
 
-# ── Calibration path (single source of truth) ──────────────────────────────
 CALIBRATION_PATH = 'data/route_stats.pkl'
 
 
@@ -101,7 +97,6 @@ class RLSimulationState:
             'current_route':    self.env.route,
         }
 
-
 sim_state = None
 
 
@@ -133,7 +128,6 @@ def load_rl_system():
             fixed_route=None,
         )
 
-        # ── KEY FIX: store path on env so compare_all_strategies can use it ──
         rl_env._route_stats_path = CALIBRATION_PATH
 
         print(f"✓ Created RL environment")
@@ -151,7 +145,6 @@ def load_rl_system():
         )
         print(f"✓ Created DQN agent")
 
-        # Discover model files (newest first)
         model_paths = [
             'models/trained_models/best_model.pth',
             'models/trained_models/final_model.pth',
@@ -194,97 +187,111 @@ def load_rl_system():
         traceback.print_exc()
         return False
 
+# Initialize during startup
+@app.on_event("startup")
+async def startup_event():
+    global rl_system_loaded
+    rl_system_loaded = load_rl_system()
 
-rl_system_loaded = load_rl_system()
+# ═══════════════════════════════════════════════════════════════════════════════
+# MODELS
+# ═══════════════════════════════════════════════════════════════════════════════
+class ChangeRouteRequest(BaseModel):
+    route: str
+
+class ActionRequest(BaseModel):
+    action: int = 4
+
+class DisruptionRequest(BaseModel):
+    type: str = 'none'
+
+class ResetRequest(BaseModel):
+    route: Optional[str] = None
+
+class ComparisonRequest(BaseModel):
+    episodes: int = 10
+
+class TraditionalTestRequest(BaseModel):
+    strategy: str = 'rule_based'
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ROUTES — PAGES
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.route('/')
-def landing():
-    return render_template('landing.html')
+@app.get('/', response_class=HTMLResponse)
+async def landing(request: Request):
+    return templates.TemplateResponse("landing.html", {"request": request})
 
+@app.get('/control', response_class=HTMLResponse)
+async def control(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
 
-@app.route('/control')
-def control():
-    return render_template('index.html')
+@app.get('/api/evaluation_log')
+async def evaluation_log():
+    try:
+        with open('results/evaluation_log.txt', 'r', encoding='utf-8') as f:
+            return HTMLResponse(content=f.read(), status_code=200)
+    except Exception as e:
+        return JSONResponse({'error': str(e)}, status_code=500)
 
-
-@app.route('/api/evaluation_log')
-def evaluation_log():
-    with open('results/evaluation_log.txt', 'r', encoding='utf-8') as f:
-        return f.read(), 200, {'Content-Type': 'text/plain; charset=utf-8'}
-
-
-@app.route('/results/<path:filename>')
-def serve_results(filename):
-    return send_from_directory('results', filename)
+@app.get('/results/{filename:path}')
+async def serve_results(filename: str):
+    return FileResponse(f"results/{filename}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ROUTES — STATE / ENVIRONMENT
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.route('/api/state')
-def get_state():
+@app.get('/api/state')
+async def get_state():
     if not rl_system_loaded or sim_state is None:
-        return jsonify({'error': 'RL system not loaded'}), 500
-    return jsonify(sim_state.get_state_dict())
+        return JSONResponse({'error': 'RL system not loaded'}, status_code=500)
+    return JSONResponse(sim_state.get_state_dict())
 
-
-@app.route('/api/routes')
-def get_routes():
+@app.get('/api/routes')
+async def get_routes():
     if not rl_system_loaded or rl_env is None:
-        return jsonify({'error': 'RL system not loaded'}), 500
-    return jsonify({
+        return JSONResponse({'error': 'RL system not loaded'}, status_code=500)
+    return JSONResponse({
         'routes':        rl_env.routes,
         'current_route': rl_env.route,
     })
 
-
-@app.route('/api/change_route', methods=['POST'])
-def change_route():
+@app.post('/api/change_route')
+async def change_route(req: ChangeRouteRequest):
     if not rl_system_loaded or rl_env is None:
-        return jsonify({'error': 'RL system not loaded'}), 500
+        return JSONResponse({'error': 'RL system not loaded'}, status_code=500)
 
-    data  = request.json
-    route = data.get('route')
+    if req.route not in rl_env.routes:
+        return JSONResponse({'error': f'Invalid route: {req.route}'}, status_code=400)
 
-    if route not in rl_env.routes:
-        return jsonify({'error': f'Invalid route: {route}'}), 400
-
-    rl_env.fixed_route = route
+    rl_env.fixed_route = req.route
     sim_state.reset()
 
-    return jsonify({'success': True, 'route': route,
-                    'message': f'Switched to route: {route}'})
+    return JSONResponse({'success': True, 'route': req.route, 'message': f'Switched to route: {req.route}'})
 
-
-@app.route('/api/action', methods=['POST'])
-def take_action():
+@app.post('/api/action')
+async def take_action(req: ActionRequest):
     if not rl_system_loaded or sim_state is None:
-        return jsonify({'error': 'RL system not loaded'}), 500
+        return JSONResponse({'error': 'RL system not loaded'}, status_code=500)
 
-    data   = request.json
-    action = data.get('action', 4)
-
-    if not (0 <= action < 9):
-        return jsonify({'error': 'Invalid action'}), 400
+    if not (0 <= req.action < 9):
+        return JSONResponse({'error': 'Invalid action'}, status_code=400)
 
     try:
-        next_state, reward, done, info = sim_state.step(action)
+        next_state, reward, done, info = sim_state.step(req.action)
 
         action_names = {
             0: 'E↓10% B↓10%', 1: 'E↓10% B→',   2: 'E↓10% B↑10%',
-            3: 'E→ B↓10%',    4: 'E→ B→',        5: 'E→ B↑10%',
-            6: 'E↑10% B↓10%', 7: 'E↑10% B→',    8: 'E↑10% B↑10%',
+            3: 'E→ B↓10%',    4: 'E→ B→',      5: 'E→ B↑10%',
+            6: 'E↑10% B↓10%', 7: 'E↑10% B→',   8: 'E↑10% B↑10%',
         }
 
-        return jsonify({
+        return JSONResponse({
             'success':        True,
-            'action_name':    action_names[action],
+            'action_name':    action_names[req.action],
             'econ_bookings':  int(info['econ_bookings']),
             'bus_bookings':   int(info['bus_bookings']),
             'total_bookings': int(info['econ_bookings'] + info['bus_bookings']),
@@ -295,27 +302,22 @@ def take_action():
             'new_econ_price': float(info['econ_price']),
             'new_bus_price':  float(info['bus_price']),
             'done':           bool(done),
-            'message':        (f"Action: {action_names[action]} | "
-                               f"Sold {info['econ_bookings']}E + {info['bus_bookings']}B | "
-                               f"Reward: {reward:.1f}"),
+            'message':        f"Action: {action_names[req.action]} | Sold {info['econ_bookings']}E + {info['bus_bookings']}B | Reward: {reward:.1f}",
         })
-
     except Exception as e:
         import traceback; traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        return JSONResponse({'error': str(e)}, status_code=500)
 
-
-@app.route('/api/disruption', methods=['POST'])
-def trigger_disruption():
+@app.post('/api/disruption')
+async def trigger_disruption(req: DisruptionRequest):
     if not rl_system_loaded or sim_state is None:
-        return jsonify({'error': 'RL system not loaded'}), 500
+        return JSONResponse({'error': 'RL system not loaded'}, status_code=500)
 
-    data           = request.json
-    disruption_type = data.get('type', 'none')
-
+    disruption_type = req.type
     sim_state.env.current_disruption = disruption_type
+    
     if disruption_type != 'none':
-        sim_state.env.disruption_duration = np.random.randint(1, 4)
+        sim_state.env.disruption_duration = int(np.random.randint(1, 4))
     else:
         sim_state.env.disruption_duration = 0
 
@@ -325,45 +327,38 @@ def trigger_disruption():
         'competitor_cancel': '✈️ Competitor cancelled! Demand +50%',
         'none':              '✅ Normal operations',
     }
-    return jsonify({'success': True, 'disruption': disruption_type,
-                    'message': messages.get(disruption_type, 'Unknown')})
+    return JSONResponse({'success': True, 'disruption': disruption_type, 'message': messages.get(disruption_type, 'Unknown')})
 
 
-@app.route('/api/reset', methods=['POST'])
-def reset_simulation():
+@app.post('/api/reset')
+async def reset_simulation(req: ResetRequest):
     if not rl_system_loaded or sim_state is None:
-        return jsonify({'error': 'RL system not loaded'}), 500
-
+        return JSONResponse({'error': 'RL system not loaded'}, status_code=500)
     try:
-        data      = request.json if request.json else {}
-        new_route = data.get('route')
-
+        new_route = req.route
         if new_route and new_route in rl_env.routes:
             rl_env.fixed_route = new_route
-
         sim_state.reset()
-        return jsonify({'success': True, 'message': 'RL environment reset',
-                        'route': sim_state.env.route, 'calibrated': True})
+        return JSONResponse({'success': True, 'message': 'RL environment reset', 'route': sim_state.env.route, 'calibrated': True})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return JSONResponse({'error': str(e)}, status_code=500)
 
-
-@app.route('/api/history')
-def get_history():
+@app.get('/api/history')
+async def get_history():
     if not rl_system_loaded or sim_state is None:
-        return jsonify({'error': 'RL system not loaded'}), 500
+        return JSONResponse({'error': 'RL system not loaded'}, status_code=500)
     history = sim_state.env.episode_history[-100:]
-    return jsonify({'history': history})
+    return JSONResponse({'history': history})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ROUTES — AGENT
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.route('/api/agent_info')
-def get_agent_info():
+@app.get('/api/agent_info')
+async def get_agent_info():
     if not rl_system_loaded:
-        return jsonify({'error': 'RL system not loaded'}), 500
+        return JSONResponse({'error': 'RL system not loaded'}, status_code=500)
 
     info = {
         'agent_loaded':    agent_loaded,
@@ -375,22 +370,21 @@ def get_agent_info():
         'training_steps':  rl_agent.training_steps         if rl_agent else 0,
         'episodes_trained': rl_agent.episode_count         if rl_agent else 0,
     }
-    return jsonify(info)
+    return JSONResponse(info)
 
 
-@app.route('/api/ai_recommendation')
-def get_ai_recommendation():
+@app.get('/api/ai_recommendation')
+async def get_ai_recommendation():
     """RL agent's recommended action with context-aware reasoning."""
     global _rec_cache, _rec_cache_time
 
     if not rl_system_loaded or sim_state is None:
-        return jsonify({'error': 'RL system not loaded'}), 500
+        return JSONResponse({'error': 'RL system not loaded'}, status_code=500)
     if rl_agent is None:
-        return jsonify({'error': 'RL agent not initialized'}), 500
+        return JSONResponse({'error': 'RL agent not initialized'}, status_code=500)
 
-    # Return cached result if < 3 s old
     if time.time() - _rec_cache_time < 3 and _rec_cache:
-        return jsonify(_rec_cache)
+        return JSONResponse(_rec_cache)
 
     try:
         state = sim_state.current_state
@@ -399,7 +393,6 @@ def get_ai_recommendation():
 
         env = sim_state.env
 
-        # Q-values
         q_values    = rl_agent.get_action_distribution(state)
         action      = int(np.argmax(q_values))
         q_value     = float(q_values[action])
@@ -411,15 +404,11 @@ def get_ai_recommendation():
         }
         action_name = action_names.get(action, f"Action {action}")
 
-        # Confidence from Q-value spread
         q_max  = float(np.max(q_values))
         q_mean = float(np.mean(q_values))
         q_std  = float(np.std(q_values))
+        confidence = (min(0.97, 0.5 + (q_max - q_mean) / (2 * q_std + 1e-8)) if q_std > 0.5 else 0.40)
 
-        confidence = (min(0.97, 0.5 + (q_max - q_mean) / (2 * q_std + 1e-8))
-                      if q_std > 0.5 else 0.40)
-
-        # Context
         econ_load   = env.econ_sold / env.econ_seats_total
         bus_load    = env.bus_sold  / env.bus_seats_total
         total_load  = (env.econ_sold + env.bus_sold) / env.total_seats
@@ -430,7 +419,6 @@ def get_ai_recommendation():
         econ_ratio    = env.econ_price / econ_comp_avg if econ_comp_avg > 0 else 1.0
         bus_ratio     = env.bus_price  / bus_comp_avg  if bus_comp_avg  > 0 else 1.0
 
-        # Reason generation
         if q_std < 0.5 and not agent_loaded:
             if days_left < 7 and total_load < 0.6:
                 action = 0; action_name = action_names[0]
@@ -471,7 +459,6 @@ def get_ai_recommendation():
         else:
             reason = f"⚠️ Model uncertain (Q-spread: {q_std:.2f}) — Train more episodes"
 
-        # Stable softmax for top-3
         q_shifted     = q_values - np.max(q_values)
         softmax_probs = np.exp(q_shifted) / np.sum(np.exp(q_shifted))
         top3_indices  = np.argsort(q_values)[::-1][:3]
@@ -508,32 +495,28 @@ def get_ai_recommendation():
 
         _rec_cache      = result
         _rec_cache_time = time.time()
-        return jsonify(result)
+        return JSONResponse(result)
 
     except Exception as e:
         import traceback; traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        return JSONResponse({'error': str(e)}, status_code=500)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ROUTES — COMPARISON
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.route('/api/run_comparison', methods=['POST'])
-def run_comparison():
+@app.post('/api/run_comparison')
+async def run_comparison(req: ComparisonRequest):
     global comparison_results
 
     if not rl_system_loaded or rl_env is None:
-        return jsonify({'error': 'RL system not loaded'}), 500
+        return JSONResponse({'error': 'RL system not loaded'}, status_code=500)
 
     try:
-        data         = request.json or {}
-        # ── FIX: default was 50 (mismatches frontend's 10) → now 10 ──────
-        num_episodes = int(data.get('episodes', 10))
-
+        num_episodes = req.episodes
         print(f"\n🔄 Running comparison ({num_episodes} episodes per strategy)…")
 
-        # ── FIX: ensure _route_stats_path is set so fresh envs can be built ─
         if not hasattr(rl_env, '_route_stats_path'):
             rl_env._route_stats_path = CALIBRATION_PATH
 
@@ -545,7 +528,6 @@ def run_comparison():
         )
 
         formatted_results = {}
-
         for strategy_name, metrics in comparison_results.items():
             formatted_results[strategy_name] = {
                 'name':            strategy_name.replace('_', ' ').title(),
@@ -560,7 +542,6 @@ def run_comparison():
                 'load_factors':    [float(lf * 100) for lf in metrics['load_factors']],
             }
 
-        # Comparison summary (RL vs best traditional)
         if 'rl_agent' in formatted_results and agent_loaded:
             rl_revenue   = formatted_results['rl_agent']['avg_revenue']
             trad_names   = [k for k in formatted_results if k != 'rl_agent']
@@ -576,22 +557,20 @@ def run_comparison():
                 'rl_advantage':             rl_revenue > best_revenue,
             }
 
-        return jsonify({
+        return JSONResponse({
             'success':      True,
             'results':      formatted_results,
             'num_episodes': num_episodes,
             'message':      f'Comparison complete: {len(comparison_results)} strategies evaluated',
         })
-
     except Exception as e:
         import traceback; traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        return JSONResponse({'error': str(e)}, status_code=500)
 
-
-@app.route('/api/get_comparison')
-def get_comparison():
+@app.get('/api/get_comparison')
+async def get_comparison():
     if comparison_results is None:
-        return jsonify({'error': 'No comparison results. Run comparison first.'}), 404
+        return JSONResponse({'error': 'No comparison results. Run comparison first.'}, status_code=404)
 
     formatted_results = {}
     for strategy_name, metrics in comparison_results.items():
@@ -623,37 +602,24 @@ def get_comparison():
             'rl_advantage':             rl_revenue > best_revenue,
         }
 
-    return jsonify({'success': True, 'results': formatted_results})
+    return JSONResponse({'success': True, 'results': formatted_results})
 
 
-@app.route('/api/test_traditional', methods=['POST'])
-def test_traditional():
-    """
-    Run a single traditional strategy for one episode and return results.
-
-    ── KEY FIX ──
-    The OLD code called sim_state.reset() then ran the strategy on the
-    live sim_state — this DISRUPTED the dashboard mid-episode.
-
-    Now we build a completely independent fresh env so the live dashboard
-    is untouched.
-    """
+@app.post('/api/test_traditional')
+async def test_traditional(req: TraditionalTestRequest):
     if not rl_system_loaded or rl_env is None:
-        return jsonify({'error': 'RL system not loaded'}), 500
+        return JSONResponse({'error': 'RL system not loaded'}, status_code=500)
 
-    data          = request.json or {}
-    strategy_name = data.get('strategy', 'rule_based')
+    strategy_name = req.strategy
 
     if strategy_name not in TRADITIONAL_STRATEGIES:
-        return jsonify({'error': f'Unknown strategy: {strategy_name}'}), 400
+        return JSONResponse({'error': f'Unknown strategy: {strategy_name}'}, status_code=400)
 
     try:
         strategy_fn = TRADITIONAL_STRATEGIES[strategy_name]
-
-        # ── Build a fresh independent env (never touches sim_state) ──────
         test_env = AirlineRevenueEnv(
             route_stats_path=CALIBRATION_PATH,
-            fixed_route=rl_env.fixed_route,      # same route as dashboard
+            fixed_route=rl_env.fixed_route,
         )
         state, _ = test_env.reset()
         done         = False
@@ -669,7 +635,7 @@ def test_traditional():
 
         summary = test_env.get_episode_summary()
 
-        return jsonify({
+        return JSONResponse({
             'success':       True,
             'strategy':      strategy_name.replace('_', ' ').title(),
             'total_revenue': float(summary['total_revenue']),
@@ -678,53 +644,20 @@ def test_traditional():
             'bus_load':      float(summary['bus_load_factor']    * 100),
             'total_reward':  float(total_reward),
             'actions_taken': len(actions_taken),
-            'message':       (f"{strategy_name.replace('_', ' ').title()} "
-                              f"completed: ₹{summary['total_revenue']:,.0f} revenue"),
+            'message':       f"{strategy_name.replace('_', ' ').title()} completed: ₹{summary['total_revenue']:,.0f} revenue",
         })
 
     except Exception as e:
         import traceback; traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ENTRY POINT
-# ═══════════════════════════════════════════════════════════════════════════════
+        return JSONResponse({'error': str(e)}, status_code=500)
 
 if __name__ == '__main__':
+    import uvicorn
     print("\n" + "=" * 80)
     print("  🚀 RL-INTEGRATED MULTI-CLASS AIRLINE DASHBOARD")
     print("=" * 80)
 
-    if rl_system_loaded:
-        print(f"\n  ✅ RL System Status:  LOADED")
-        print(f"  🤖 Agent Status:      {'TRAINED ✓' if agent_loaded else 'UNTRAINED ⚠️'}")
-        print(f"  🌍 Environment:       Multi-route, Multi-class")
-        print(f"  🎯 Action Space:      9 joint pricing actions")
-        print(f"  📊 State Space:       {AGENT_CONFIG.get('state_size', 'N/A')} features")
-        print(f"  🛣️  Available Routes:  {len(rl_env.routes)}")
-        if not agent_loaded:
-            print(f"\n  ⚠️  NO TRAINED MODEL FOUND")
-            print(f"     Train first: python training/train.py")
-    else:
-        print(f"\n  ❌ RL System: FAILED TO LOAD")
-        print(f"     Run: python analyze_data.py")
-
-    print(f"\n  🌐 Dashboard: http://localhost:5001")
-    print(f"\n  📡 API Endpoints:")
-    print(f"     GET  /api/state              Current RL env state")
-    print(f"     GET  /api/routes             Available routes")
-    print(f"     POST /api/change_route       Switch route")
-    print(f"     POST /api/action             Execute action")
-    print(f"     GET  /api/ai_recommendation  RL agent best action")
-    print(f"     GET  /api/history            Episode history")
-    print(f"     POST /api/run_comparison     Compare all strategies")
-    print(f"     GET  /api/get_comparison     Cached comparison results")
-    print(f"     POST /api/test_traditional   Single strategy test")
-    print("\n" + "=" * 80 + "\n")
-
-    # debug=False prevents double model loading on Flask reloader
-    port = FLASK_CONFIG['port']
-    host = FLASK_CONFIG['host']
-    print(f"\n   Open in browser: http://localhost:{port}\n")
-    app.run(debug=False, host=host, port=port)
+    port = FLASK_CONFIG.get('port', 8080)
+    host = FLASK_CONFIG.get('host', '0.0.0.0')
+    print(f"\n   Open in browser: http://127.0.0.1:{port}\n")
+    uvicorn.run("app:app", host=host, port=port, reload=False)

@@ -26,6 +26,6 @@ COPY . .
 # Expose Flask port (8080: universal on Windows/macOS/Linux)
 EXPOSE 8080
 
-# Start server with Gunicorn (production-ready)
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:8080", "--workers", "1", "--timeout", "120"]
+# Start server with Uvicorn (FastAPI)
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
 

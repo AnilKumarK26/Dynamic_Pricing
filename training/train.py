@@ -594,7 +594,10 @@ def main():
 
     accepted_params = [
         'learning_rate', 'gamma', 'epsilon', 'epsilon_decay', 'epsilon_min',
-        'batch_size', 'hidden_size', 'use_prioritized_replay', 'device'
+        'batch_size', 'hidden_size', 'replay_buffer_size',
+        'use_prioritized_replay', 'priority_alpha', 'priority_beta',
+        'priority_beta_increment', 'gradient_clip', 'learning_rate_decay',
+        'lr_decay_step', 'device'
     ]
 
     agent_params = {k: v for k, v in AGENT_CONFIG.items() if k in accepted_params}

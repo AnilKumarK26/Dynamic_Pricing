@@ -78,7 +78,7 @@ ENV_CONFIG = {
 STATE_CONFIG = {
     'base_features': 7,  # [econ_price, bus_price, econ_comp_avg, bus_comp_avg, econ_remaining, bus_remaining, days_norm]
     'route_encoding_size': None,  # Will be set dynamically based on loaded routes
-    'additional_features': 5,  # [disruption_flag, time_sin, time_cos, econ_price_ratio, bus_price_ratio]
+    'additional_features': 9,  # [disruption, time_sin, time_cos, econ_ratio, bus_ratio, econ_comp_vel, bus_comp_vel, econ_dem_vel, bus_dem_vel]
     'total_state_size': None,  # Will be computed: base + route_encoding + additional
 }
 
