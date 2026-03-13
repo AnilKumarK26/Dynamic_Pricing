@@ -4,6 +4,16 @@ Welcome to the **Airline Dynamic Pricing** simulation, a high-performance reinfo
 
 Our application architecture relies on advanced Deep Q-Networks (DQN) synchronized to a customized Gymnasium simulation environment and visualized seamlessly via a premium, aerospace-themed dashboard.
 
+## 💻 Technology Stack
+
+* **Backend Framework:** FastAPI (Async Python)
+* **Reinforcement Learning:** PyTorch (Dueling DQN)
+* **Environment Simulation:** Gymnasium (OpenAI Gym successor)
+* **Mathematical Operations:** NumPy
+* **Frontend:** Vanilla HTML/JS, advanced CSS with CSS Grid & Glassmorphism
+* **Containerization:** Docker & Docker Compose
+* **Dependency Management:** UV (Fast Python package installer)
+
 ## 🚀 Advanced Codebase Architecture
 
 This project strictly utilizes a **Modular Design** to cleanly separate the mathematical algorithms from the web interfaces and infrastructure logic. The codebase is broken down into specific domains:
@@ -108,14 +118,49 @@ docker compose up --build -d
 
 ---
 
-## 📡 Systems Flow & API
+## 🔄 System Flow
 
-The FastAPI server exposes endpoints designed for high-frequency async polling from the UI without locking up the RL agent inference models:
+Below is the high-level flow demonstrating how the user, backend, and RL agent interact during a session.
 
-- **`GET` /api/state**: Returns the current observation metrics for both Economy and Business.
-- **`GET` /api/ai_recommendation**: Performs a swift PyTorch Q-value spread operation to render the AI's confidence score and logic explanation.
-- **`POST` /api/run_comparison**: Executes headless synchronous simulations matching the RL agent against Rule-Based and Random strategies.
-- **`POST` /api/action**: Accepts the user's manual 9-action integer input and steps the primary simulation.
+```mermaid
+graph TD
+    A[User / UI] -->|Select Route| B[FastAPI Backend]
+    B -->|Reset Environment| C[AirlineRevenueEnv]
+    
+    A -->|Get State| B
+    B -->|Return State & Pricing| A
+    
+    A -->|Ask AI for Recommendation| B
+    B -->|Fetch Observation| C
+    B -->|Pass to Dueling DQN| D[RL Agent]
+    D -->|Calculate Q-Values| B
+    B -->|Format Recommendation & Confidence| A
+    
+    A -->|Submit Action| B
+    B -->|Step Environment| C
+    C -->|Calculate Demand & Reward| C
+    C -->|Return Next State| B
+    B -->|Update UI Metrics| A
+```
+
+## 📡 API Endpoints Reference
+
+The FastAPI server exposes several JSON endpoints designed for high-frequency async polling from the UI without locking up the RL agent inference models:
+
+### Environment & State
+- **`GET /api/state`**: Returns the current observation metrics for both Economy and Business classes, including pricing, load factors, days to departure, and total revenue.
+- **`GET /api/routes`**: Returns a list of all 30 calibrated flight routes and the currently active route.
+- **`POST /api/change_route`**: Accepts a `route` string to switch the active simulation environment.
+- **`POST /api/reset`**: Resets the current environment simulation back to Day 90.
+
+### Actions & Simulation
+- **`POST /api/action`**: Accepts an integer `action` (0-8) to step the environment forward one day. Returns the revenue generated, bookings made, and the RL reward.
+- **`POST /api/disruption`**: Accepts a disruption `type` (`weather`, `pilot_strike`, `competitor_cancel`, or `none`) to manually trigger environmental events that aggressively sway demand probabilities.
+
+### Artificial Intelligence
+- **`GET /api/ai_recommendation`**: Performs a swift PyTorch Q-value spread operation on the current state. Returns the agent's recommended action, a sorted list of alternative actions (Softmax probabilities), an underlying confidence score, and a text-based logical reasoning string explaining *why* it chose that action.
+- **`POST /api/run_comparison`**: Executes headless synchronous simulations matching the RL agent against Rule-Based and Random strategies, simulating through `N` episodes simultaneously to benchmark performance.
+- **`GET /api/agent_info`**: Returns metadata about the currently loaded PyTorch `.pth` model, including the device mode (`MPS`, `CUDA`, `CPU`), exploration rate, and training metrics.
 
 ## 🏃 Training the Agent
 
