@@ -88,6 +88,7 @@ h1, h2, h3, h4, h5, h6 {
     text-transform: uppercase;
     background: linear-gradient(135deg, #fff 20%, var(--primary) 100%);
     -webkit-background-clip: text;
+    background-clip: text;
     -webkit-text-fill-color: transparent;
     animation: fadeInUp 0.8s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
@@ -495,8 +496,9 @@ h1, h2, h3, h4, h5, h6 {
     object-fit: contain;
     border-radius: 12px;
     margin-bottom: 20px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    background: rgba(0,0,0,0.5);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: #ffffff;
+    padding: 15px;
 }
 
 .performance-image-card.wide {
