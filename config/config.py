@@ -170,7 +170,7 @@ AGENT_CONFIG = {
 # =================================================
 TRAINING_CONFIG = {
     # Training episodes — increase significantly
-    'num_episodes': 6000,          # was 2000 — 3x more training
+    'num_episodes': 500,          # was 2000 — 3x more training
     'max_steps_per_episode': 90,
     
     # Network updates
@@ -191,13 +191,13 @@ TRAINING_CONFIG = {
     'route_sampling': 'curriculum',    # was 'uniform'
     'curriculum_learning': True,       # was False
     
-    # Phase 1: Learn on 3 easiest/highest-traffic routes (episodes 0-1500)
-    # Phase 2: Add 7 more medium routes (episodes 1500-3500)
-    # Phase 3: All routes (episodes 3500-6000)
+    # Phase 1: Learn on 3 easiest/highest-traffic routes
+    # Phase 2: Add 7 more medium routes
+    # Phase 3: All routes
     'curriculum_phases': [
-        {'end_episode': 1500, 'num_routes': 3},
-        {'end_episode': 3500, 'num_routes': 10},
-        {'end_episode': 6000, 'num_routes': None},   # None = all routes
+        {'end_episode': 150, 'num_routes': 3},
+        {'end_episode': 300, 'num_routes': 10},
+        {'end_episode': 500, 'num_routes': None},   # None = all routes
     ],
     
     # Logging
