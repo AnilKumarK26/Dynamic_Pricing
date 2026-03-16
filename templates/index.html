@@ -24,19 +24,19 @@
 
         <!-- HEADER -->
         <header>
-            <h1 style="font-weight: 300; letter-spacing: 2px;">AIRLINE <span
-                    style="font-weight: 700; color: var(--primary-color);">RL DASHBOARD</span></h1>
-            <p class="subtitle"
-                style="text-transform: uppercase; letter-spacing: 2px; color: var(--text-muted); font-size: 0.85rem; font-weight: 600;">
-                Deep Q-Network Agent | Joint Economy & Business Pricing</p>
-            <div class="route-badge"
-                style="background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border-color); font-family: 'Inter', sans-serif;">
-                <span style="color: var(--primary-color);">Route:</span> <strong id="route-name"
-                    style="font-weight: 500;">Loading...</strong> |
-                <span style="color: var(--primary-color);">Days to Departure:</span> <strong id="days-departure"
-                    style="font-weight: 500;">90</strong> |
-                <span style="color: var(--primary-color);">Disruption:</span> <strong id="disruption-status"
-                    style="font-weight: 500;">None</strong>
+            <h1 class="dashboard-title">AIRLINE <span class="dashboard-title-accent">RL DASHBOARD</span></h1>
+            <p class="subtitle subtitle-dashboard">
+                Deep Q-Network Agent &bull; Joint Economy &amp; Business Pricing
+            </p>
+            <div class="route-badge">
+                <span class="route-label">Route:</span>
+                <strong id="route-name" class="route-value">Loading...</strong>
+                <span class="route-separator">|</span>
+                <span class="route-label">Days to Departure:</span>
+                <strong id="days-departure" class="route-value">90</strong>
+                <span class="route-separator">|</span>
+                <span class="route-label">Disruption:</span>
+                <strong id="disruption-status" class="route-value">None</strong>
             </div>
         </header>
 

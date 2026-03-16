@@ -289,12 +289,12 @@ header h1 {
 .action-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 8px;
-    margin-bottom: 12px;
+    gap: 10px;
+    margin-bottom: 14px;
 }
 
 .action-btn {
-    padding: 14px 8px;
+    padding: 12px 8px;
     border: 1px solid transparent;
     border-radius: 10px;
     font-family: 'Space Grotesk', sans-serif;
@@ -308,6 +308,7 @@ header h1 {
     position: relative;
     overflow: hidden;
     line-height: 1.4;
+    min-height: 60px;
 }
 
 .action-btn:hover {
@@ -352,7 +353,7 @@ header h1 {
    ============================================================================ */
 
 button {
-    padding: 12px 18px;
+    padding: 11px 18px;
     border: none;
     border-radius: 10px;
     font-size: 0.9rem;
@@ -362,6 +363,10 @@ button {
     transition: all 0.3s ease;
     text-transform: uppercase;
     letter-spacing: 0.5px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
 }
 
 button:hover {
